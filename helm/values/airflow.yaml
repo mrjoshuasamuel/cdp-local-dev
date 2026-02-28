@@ -28,8 +28,12 @@ webserver:
 
   # Expose via NodePort so Kind's port-mapping (30080 → 8080) works
   service:
-    type: NodePort
-    nodePort: 30090
+  type: NodePort
+  ports:
+    - name:       airflow-ui
+      port:       8080
+      targetPort: 8080
+      nodePort:   30080 
 
   # Slim resource limits for laptop use
   resources:
