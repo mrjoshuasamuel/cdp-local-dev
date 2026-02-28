@@ -3,13 +3,10 @@
 # Chart: apache-airflow/airflow  v1.13.x
 #
 # Optimised for a single-node Kind cluster on a developer laptop.
-# Uses LocalExecutor (no Celery/Redis) and SQLite-backed metadata DB
-# to keep RAM usage under 2 GB.
+# Uses LocalExecutor (no Celery/Redis) to keep RAM usage under 2 GB.
 # ─────────────────────────────────────────────────────────────────────────────
 
 # ── Executor ─────────────────────────────────────────────────────────────────
-# LocalExecutor runs tasks in the same pod as the scheduler.
-# KubernetesExecutor will be switched on in Phase 2 (Spark integration).
 executor: LocalExecutor
 
 # ── Airflow version ───────────────────────────────────────────────────────────
@@ -25,8 +22,17 @@ webserver:
     firstName: CDP
     lastName:  Admin
     password:  admin
+
+  # NodePort so Kind's extraPortMappings (30080 → localhost:8080) works
   service:
-    type: ClusterIP
+    type: NodePort
+    ports:
+      - name:       airflow-ui
+        port:       8080
+        targetPort: 8080
+        nodePort:   30080
+
+  # Slim resource limits for laptop use
   resources:
     requests:
       memory: "512Mi"
@@ -34,6 +40,7 @@ webserver:
     limits:
       memory: "1Gi"
       cpu:    "500m"
+
 # ── Scheduler ─────────────────────────────────────────────────────────────────
 scheduler:
   resources:
@@ -55,9 +62,7 @@ triggerer:
       memory: "512Mi"
       cpu:    "300m"
 
-# ── Metadata DB (Airflow internal) ─────────────────────────────────────────────
-# Uses the bundled PostgreSQL sub-chart so we don't need a separate DB install
-# for Phase 1. Phase 2 will split this into its own release.
+# ── Metadata DB ───────────────────────────────────────────────────────────────
 postgresql:
   enabled: true
   auth:
@@ -80,8 +85,6 @@ postgresql:
         cpu:    "300m"
 
 # ── DAGs ───────────────────────────────────────────────────────────────────────
-# Phase 1: no DAGs mounted yet — we just verify Airflow is healthy.
-# Phase 2: a ConfigMap will be created from the developer's ./pipelines/ folder.
 dags:
   persistence:
     enabled: false
@@ -105,17 +108,16 @@ flower:
 workers:
   replicas: 0
 
-# ── StatsD (optional metrics — disabled to save RAM) ──────────────────────────
+# ── StatsD — disabled to save RAM ─────────────────────────────────────────────
 statsd:
   enabled: false
 
-# ── Environment variables (LOCAL_MODE flag ready for Phase 2) ─────────────────
+# ── Environment variables ──────────────────────────────────────────────────────
 env:
   - name:  LOCAL_MODE
     value: "true"
 
-# ── Fernet key (must be set; override with a real secret in production) ────────
-# Generated with: python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"
+# ── Fernet key ────────────────────────────────────────────────────────────────
 fernetKey: "qwerty12345678901234567890123456789012345="
 
 # ── Secret key ────────────────────────────────────────────────────────────────

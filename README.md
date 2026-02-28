@@ -3,57 +3,57 @@
 Run Apache Airflow on a local Kubernetes cluster (Kind) on your laptop —
 no cloud account, no VPN, no waiting for Dataproc.
 
-## Prerequisites
-
-| Tool | Min Version | Install |
-|------|------------|---------|
-| Docker Desktop | 24+ | [docker.com](https://www.docker.com/products/docker-desktop/) — allocate **≥ 8 GB RAM** |
-| Python | 3.10+ | `brew install python` / `winget install Python.Python.3.10` |
-| Git | 2.30+ | already installed on most systems |
-
-> `kind`, `kubectl`, and `helm` are checked by the CLI — it will tell you if they're missing and how to install them.
-
 ---
 
 ## Install
 
+### Step 1 — Install the package
 ```bash
-pip install git+https://github.com/<org>/cdp-local-dev.git
+pip install git+https://github.com/mrjoshuasamuel/cdp-local-dev.git
 ```
 
-### First-time setup (~5 minutes)
+### Step 2 — Fix PATH (run once)
+```bash
+python -c "import cdp_dev.bootstrap; cdp_dev.bootstrap" 
+```
+Or download and run the bootstrap script directly:
+```bash
+python bootstrap.py
+```
 
+This auto-detects where pip installed `cdp-dev` on **your specific machine**
+and adds it to PATH permanently. Works on Windows, macOS, and Linux —
+no hardcoded paths, no manual steps.
+
+### Step 3 — Install the environment
 ```bash
 cdp-dev install
 ```
 
-This will:
-1. Check all prerequisites
-2. Create a local Kubernetes cluster (Kind)
-3. Install Apache Airflow via Helm
-4. Start port-forwards so you can access Airflow at **http://localhost:8080**
+Takes ~5–10 minutes on first run (Docker pulls ~1 GB of images).
 
-**Login:** `admin` / `admin`
+**Login:** http://localhost:8080 → `admin` / `admin`
+
+---
+
+## Prerequisites
+
+| Tool | Notes |
+|------|-------|
+| Docker Desktop | Allocate ≥ 6 GB RAM. `cdp-dev install` will start it automatically if it's not running. |
+| Python 3.10+ | Must be installed before pip install |
+
+> `helm`, `kind`, and `kubectl` are installed automatically by `cdp-dev install` if missing.
 
 ---
 
 ## Daily Usage
 
 ```bash
-# Morning — start the environment after Docker Desktop is running
-cdp-dev start
-
-# Check everything is healthy
-cdp-dev status
-
-# Tail Airflow logs
-cdp-dev logs
-
-# Tail just the scheduler
-cdp-dev logs scheduler
-
-# End of day — pause (data is preserved)
-cdp-dev stop
+cdp-dev start     # resume after reboot
+cdp-dev status    # check pod health
+cdp-dev logs      # tail Airflow logs
+cdp-dev stop      # pause at end of day
 ```
 
 ---
@@ -63,57 +63,8 @@ cdp-dev stop
 | Command | Description |
 |---------|-------------|
 | `cdp-dev install` | First-time setup |
-| `cdp-dev start` | Resume after reboot or `stop` |
+| `cdp-dev start` | Resume after reboot or stop |
 | `cdp-dev stop` | Pause cluster (data preserved) |
 | `cdp-dev status` | Pod health + port-forward status |
-| `cdp-dev logs [service]` | Tail logs (airflow / scheduler / webserver / worker) |
+| `cdp-dev logs [service]` | Tail logs (airflow/scheduler/webserver/worker) |
 | `cdp-dev destroy` | Delete everything and start fresh |
-
----
-
-## Windows WSL2
-
-Run all commands from inside a **WSL2 Ubuntu terminal** (not PowerShell).
-Make sure Docker Desktop has WSL2 integration enabled:
-> Docker Desktop → Settings → Resources → WSL Integration → Enable for your distro
-
----
-
-## Apple Silicon (M1 / M2 / M3)
-
-Works natively — Docker Desktop runs Linux/arm64 containers on Apple Silicon.
-No extra configuration needed.
-
----
-
-## Troubleshooting
-
-**`cdp-dev install` fails at Airflow step**
-```bash
-# Check pod events
-kubectl get pods -n airflow
-kubectl describe pod <pod-name> -n airflow
-```
-
-**Port 8080 already in use**
-```bash
-# Find and kill the process using 8080
-lsof -ti:8080 | xargs kill -9
-cdp-dev start
-```
-
-**Cluster exists but pods not starting**
-```bash
-cdp-dev destroy
-cdp-dev install
-```
-
----
-
-## What's Next (Phase 2)
-
-- MinIO local object storage (replaces GCS)
-- Spark on Kubernetes (replaces Dataproc)
-- PostgreSQL for CDP config_db
-- `cdp-dev pull-config --pipeline_id` to sync pipeline configs from UDM
-- `cdp-dev trigger --pipeline_id` to run a pipeline locally
