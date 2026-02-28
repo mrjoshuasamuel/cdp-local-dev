@@ -36,20 +36,6 @@ webserver:
     limits:
       memory: "1Gi"
       cpu:    "500m"
-
-  # Expose via NodePort so Kind's port-mapping (30080 → 8080) works
-  service:
-    type: ClusterIP
-
-  # Slim resource limits for laptop use
-  resources:
-    requests:
-      memory: "512Mi"
-      cpu:    "200m"
-    limits:
-      memory: "1Gi"
-      cpu:    "500m"
-
 # ── Scheduler ─────────────────────────────────────────────────────────────────
 scheduler:
   resources:
