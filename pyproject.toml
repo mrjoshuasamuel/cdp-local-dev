@@ -1,0 +1,25 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.backends.legacy:build"
+
+[project]
+name = "cdp-local-dev"
+version = "0.1.0"
+description = "CDP Local Developer Environment — Kind + Airflow on your laptop"
+requires-python = ">=3.10"
+dependencies = [
+    "click>=8.1",
+    "rich>=13.0",
+    "pyyaml>=6.0",
+    "requests>=2.31",
+]
+
+[project.scripts]
+cdp-dev = "cdp_dev.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["cdp_dev*"]
+
+[tool.setuptools.package-data]
+cdp_dev = ["../helm/**/*"]

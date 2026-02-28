@@ -1,0 +1,29 @@
+kind: Cluster
+apiVersion: kind.x-k8s.io/v1alpha4
+name: cdp-local
+
+nodes:
+  - role: control-plane
+    # ── Port mappings — expose services on localhost ───────────────────────
+    extraPortMappings:
+
+      # Airflow Webserver UI
+      - containerPort: 30080
+        hostPort:      8080
+        protocol:      TCP
+
+      # Airflow API (for cdp-dev dag commands — Phase 2)
+      - containerPort: 30085
+        hostPort:      8085
+        protocol:      TCP
+
+    # ── Persistent storage — survives cdp-dev stop / start ────────────────
+    extraMounts:
+      - hostPath:      /tmp/cdp-local-data
+        containerPath: /data/cdp
+
+# ── Networking ─────────────────────────────────────────────────────────────
+networking:
+  # Use a non-conflicting pod CIDR
+  podSubnet:     "10.244.0.0/16"
+  serviceSubnet: "10.96.0.0/12"

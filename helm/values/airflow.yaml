@@ -1,0 +1,128 @@
+# ─────────────────────────────────────────────────────────────────────────────
+# CDP Local Dev — Apache Airflow Helm Values
+# Chart: apache-airflow/airflow  v1.13.x
+#
+# Optimised for a single-node Kind cluster on a developer laptop.
+# Uses LocalExecutor (no Celery/Redis) and SQLite-backed metadata DB
+# to keep RAM usage under 2 GB.
+# ─────────────────────────────────────────────────────────────────────────────
+
+# ── Executor ─────────────────────────────────────────────────────────────────
+# LocalExecutor runs tasks in the same pod as the scheduler.
+# KubernetesExecutor will be switched on in Phase 2 (Spark integration).
+executor: LocalExecutor
+
+# ── Airflow version ───────────────────────────────────────────────────────────
+airflowVersion: "2.9.3"
+
+# ── Default admin credentials ─────────────────────────────────────────────────
+webserver:
+  defaultUser:
+    enabled:   true
+    role:      Admin
+    username:  admin
+    email:     admin@cdp.local
+    firstName: CDP
+    lastName:  Admin
+    password:  admin
+
+  # Expose via NodePort so Kind's port-mapping (30080 → 8080) works
+  service:
+    type: NodePort
+    nodePort: 30080
+
+  # Slim resource limits for laptop use
+  resources:
+    requests:
+      memory: "512Mi"
+      cpu:    "200m"
+    limits:
+      memory: "1Gi"
+      cpu:    "500m"
+
+# ── Scheduler ─────────────────────────────────────────────────────────────────
+scheduler:
+  resources:
+    requests:
+      memory: "512Mi"
+      cpu:    "200m"
+    limits:
+      memory: "1Gi"
+      cpu:    "500m"
+
+# ── Triggerer ─────────────────────────────────────────────────────────────────
+triggerer:
+  enabled: true
+  resources:
+    requests:
+      memory: "256Mi"
+      cpu:    "100m"
+    limits:
+      memory: "512Mi"
+      cpu:    "300m"
+
+# ── Metadata DB (Airflow internal) ─────────────────────────────────────────────
+# Uses the bundled PostgreSQL sub-chart so we don't need a separate DB install
+# for Phase 1. Phase 2 will split this into its own release.
+postgresql:
+  enabled: true
+  auth:
+    enablePostgresUser: true
+    postgresPassword: "cdplocal"
+    username:         "airflow"
+    password:         "airflow"
+    database:         "airflow"
+  primary:
+    persistence:
+      enabled:      true
+      storageClass: "standard"
+      size:         "2Gi"
+    resources:
+      requests:
+        memory: "256Mi"
+        cpu:    "100m"
+      limits:
+        memory: "512Mi"
+        cpu:    "300m"
+
+# ── DAGs ───────────────────────────────────────────────────────────────────────
+# Phase 1: no DAGs mounted yet — we just verify Airflow is healthy.
+# Phase 2: a ConfigMap will be created from the developer's ./pipelines/ folder.
+dags:
+  persistence:
+    enabled: false
+  gitSync:
+    enabled: false
+
+# ── Logs ───────────────────────────────────────────────────────────────────────
+logs:
+  persistence:
+    enabled: false
+
+# ── Redis (not needed with LocalExecutor) ──────────────────────────────────────
+redis:
+  enabled: false
+
+# ── Flower (not needed with LocalExecutor) ─────────────────────────────────────
+flower:
+  enabled: false
+
+# ── Workers (not needed with LocalExecutor) ────────────────────────────────────
+workers:
+  replicas: 0
+
+# ── StatsD (optional metrics — disabled to save RAM) ──────────────────────────
+statsd:
+  enabled: false
+
+# ── Environment variables (LOCAL_MODE flag ready for Phase 2) ─────────────────
+env:
+  - name:  LOCAL_MODE
+    value: "true"
+
+# ── Fernet key (must be set; override with a real secret in production) ────────
+# Generated with: python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"
+fernetKey: "qwerty12345678901234567890123456789012345="
+
+# ── Secret key ────────────────────────────────────────────────────────────────
+webserverSecretKey: "cdp-local-dev-secret-key-change-in-prod"
