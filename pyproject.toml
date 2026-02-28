@@ -18,9 +18,13 @@ dependencies = [
 [project.scripts]
 cdp-dev = "cdp_dev.cli:main"
 
+[tool.setuptools]
+include-package-data = true
+
 [tool.setuptools.packages.find]
 where = ["."]
-include = ["cdp_dev*"]
+include = ["cdp_dev", "cdp_dev.*"]
 
 [tool.setuptools.package-data]
-cdp_dev = ["../helm/**/*"]
+"cdp_dev" = ["**/*"]
+"" = ["helm/**/*", "helm/**/**/*"]

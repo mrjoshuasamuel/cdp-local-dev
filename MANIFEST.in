@@ -1,2 +1,4 @@
+recursive-include cdp_dev *.py
 recursive-include helm *.yaml *.yml
 include README.md
+include setup.cfg
