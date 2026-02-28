@@ -82,7 +82,7 @@ def create_cluster():
         return
 
     # Prefer repo layout; fall back to installed-package layout
-    base = Path(__file__).parent.parent
+    base = Path(__file__).parent
     kind_config = base / "helm" / "kind" / "kind-config.yaml"
     if not kind_config.exists():
         kind_config = _helm_config_path() / "kind" / "kind-config.yaml"

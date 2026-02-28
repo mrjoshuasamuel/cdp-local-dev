@@ -1,0 +1,124 @@
+# ─────────────────────────────────────────────────────────────────────────────
+# CDP Local Dev — Apache Airflow Helm Values
+# Chart: apache-airflow/airflow  v1.13.x
+#
+# Optimised for a single-node Kind cluster on a developer laptop.
+# Uses LocalExecutor (no Celery/Redis) to keep RAM usage under 2 GB.
+# ─────────────────────────────────────────────────────────────────────────────
+
+# ── Executor ─────────────────────────────────────────────────────────────────
+executor: LocalExecutor
+
+# ── Airflow version ───────────────────────────────────────────────────────────
+airflowVersion: "2.9.3"
+
+# ── Default admin credentials ─────────────────────────────────────────────────
+webserver:
+  defaultUser:
+    enabled:   true
+    role:      Admin
+    username:  admin
+    email:     admin@cdp.local
+    firstName: CDP
+    lastName:  Admin
+    password:  admin
+
+  # NodePort so Kind's extraPortMappings (30080 → localhost:8080) works
+  service:
+    type: NodePort
+    ports:
+      - name:       airflow-ui
+        port:       8080
+        targetPort: 8080
+        nodePort:   30080
+
+  # Slim resource limits for laptop use
+  resources:
+    requests:
+      memory: "512Mi"
+      cpu:    "200m"
+    limits:
+      memory: "1Gi"
+      cpu:    "500m"
+
+# ── Scheduler ─────────────────────────────────────────────────────────────────
+scheduler:
+  resources:
+    requests:
+      memory: "512Mi"
+      cpu:    "200m"
+    limits:
+      memory: "1Gi"
+      cpu:    "500m"
+
+# ── Triggerer ─────────────────────────────────────────────────────────────────
+triggerer:
+  enabled: true
+  resources:
+    requests:
+      memory: "256Mi"
+      cpu:    "100m"
+    limits:
+      memory: "512Mi"
+      cpu:    "300m"
+
+# ── Metadata DB ───────────────────────────────────────────────────────────────
+postgresql:
+  enabled: true
+  auth:
+    enablePostgresUser: true
+    postgresPassword: "cdplocal"
+    username:         "airflow"
+    password:         "airflow"
+    database:         "airflow"
+  primary:
+    persistence:
+      enabled:      true
+      storageClass: "standard"
+      size:         "2Gi"
+    resources:
+      requests:
+        memory: "256Mi"
+        cpu:    "100m"
+      limits:
+        memory: "512Mi"
+        cpu:    "300m"
+
+# ── DAGs ───────────────────────────────────────────────────────────────────────
+dags:
+  persistence:
+    enabled: false
+  gitSync:
+    enabled: false
+
+# ── Logs ───────────────────────────────────────────────────────────────────────
+logs:
+  persistence:
+    enabled: false
+
+# ── Redis (not needed with LocalExecutor) ──────────────────────────────────────
+redis:
+  enabled: false
+
+# ── Flower (not needed with LocalExecutor) ─────────────────────────────────────
+flower:
+  enabled: false
+
+# ── Workers (not needed with LocalExecutor) ────────────────────────────────────
+workers:
+  replicas: 0
+
+# ── StatsD — disabled to save RAM ─────────────────────────────────────────────
+statsd:
+  enabled: false
+
+# ── Environment variables ──────────────────────────────────────────────────────
+env:
+  - name:  LOCAL_MODE
+    value: "true"
+
+# ── Fernet key ────────────────────────────────────────────────────────────────
+fernetKey: "qwerty12345678901234567890123456789012345="
+
+# ── Secret key ────────────────────────────────────────────────────────────────
+webserverSecretKey: "cdp-local-dev-secret-key-change-in-prod"
