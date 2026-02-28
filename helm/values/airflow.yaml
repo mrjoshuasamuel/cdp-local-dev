@@ -26,14 +26,20 @@ webserver:
     lastName:  Admin
     password:  admin
 
+  service:
+    type: ClusterIP
+
+  resources:
+    requests:
+      memory: "512Mi"
+      cpu:    "200m"
+    limits:
+      memory: "1Gi"
+      cpu:    "500m"
+
   # Expose via NodePort so Kind's port-mapping (30080 → 8080) works
   service:
-  type: NodePort
-  ports:
-    - name:       airflow-ui
-      port:       8080
-      targetPort: 8080
-      nodePort:   30080 
+    type: ClusterIP
 
   # Slim resource limits for laptop use
   resources:
