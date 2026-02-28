@@ -25,10 +25,8 @@ webserver:
     firstName: CDP
     lastName:  Admin
     password:  admin
-
   service:
     type: ClusterIP
-
   resources:
     requests:
       memory: "512Mi"
