@@ -29,7 +29,7 @@ webserver:
   # Expose via NodePort so Kind's port-mapping (30080 → 8080) works
   service:
     type: NodePort
-    nodePort: 30080
+    nodePort: 30090
 
   # Slim resource limits for laptop use
   resources:
