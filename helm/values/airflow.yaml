@@ -12,6 +12,11 @@ executor: LocalExecutor
 # ── Airflow version ───────────────────────────────────────────────────────────
 airflowVersion: "2.9.3"
 
+images:
+  airflow:
+    repository: apache/airflow
+    tag: "2.9.3"
+    pullPolicy: IfNotPresent
 # ── Default admin credentials ─────────────────────────────────────────────────
 webserver:
   defaultUser:
