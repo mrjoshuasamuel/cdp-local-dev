@@ -1,3 +1,13 @@
+"""
+cli.py — CDP Local Dev main entry point.
+
+Can be invoked two ways:
+  1. cdp-dev install       (after PATH is fixed)
+  2. python -m cdp_dev install  (always works, python is always on PATH)
+
+On first run, automatically installs cdp-dev.bat into System32
+so `cdp-dev` works in every terminal from that point on.
+"""
 import click
 from rich.console import Console
 
@@ -14,16 +24,21 @@ def main():
     so you can develop and test pipelines without touching the cloud.
 
     \b
-    Quick start:
-        cdp-dev install     # first time setup (~5 min)
-        cdp-dev status      # check everything is healthy
-        cdp-dev stop        # pause at end of day
-        cdp-dev start       # resume next morning
+    Quick start (python -m always works):
+        python -m cdp_dev install   # first time setup
+        python -m cdp_dev status    # check health
+        python -m cdp_dev stop      # pause at end of day
+        python -m cdp_dev start     # resume next morning
+
+    \b
+    After first run, cdp-dev is also available directly:
+        cdp-dev install
+        cdp-dev status
     """
-    # Silently ensure pip Scripts dir is on PATH on Windows
-    # so cdp-dev works from any terminal without manual PATH edits
-    from cdp_dev.path_helper import ensure_on_path
-    ensure_on_path()
+    # On every invocation, silently ensure cdp-dev.bat is in System32
+    # so the short `cdp-dev` command works in all future terminals
+    from cdp_dev.path_helper import ensure_cdpdev_globally_accessible
+    ensure_cdpdev_globally_accessible()
 
 
 from cdp_dev.commands.install import install

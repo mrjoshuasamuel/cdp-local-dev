@@ -7,32 +7,19 @@ no cloud account, no VPN, no waiting for Dataproc.
 
 ## Install
 
-### Step 1 — Install the package
 ```bash
+# Step 1 — install the package (python is always on PATH)
 pip install git+https://github.com/mrjoshuasamuel/cdp-local-dev.git
+
+# Step 2 — run install (python -m always works, no PATH setup needed)
+python -m cdp_dev install
 ```
 
-### Step 2 — Fix PATH (run once)
-```bash
-python -c "import cdp_dev.bootstrap; cdp_dev.bootstrap" 
-```
-Or download and run the bootstrap script directly:
-```bash
-python bootstrap.py
-```
+On first run, `python -m cdp_dev install` will:
+- Automatically install `cdp-dev.bat` into `C:\Windows\System32` (Windows UAC prompt)
+- After that, `cdp-dev install` also works in every terminal permanently
 
-This auto-detects where pip installed `cdp-dev` on **your specific machine**
-and adds it to PATH permanently. Works on Windows, macOS, and Linux —
-no hardcoded paths, no manual steps.
-
-### Step 3 — Install the environment
-```bash
-cdp-dev install
-```
-
-Takes ~5–10 minutes on first run (Docker pulls ~1 GB of images).
-
-**Login:** http://localhost:8080 → `admin` / `admin`
+**That's it. No manual PATH editing. No bootstrap script. No restart needed.**
 
 ---
 
@@ -40,20 +27,23 @@ Takes ~5–10 minutes on first run (Docker pulls ~1 GB of images).
 
 | Tool | Notes |
 |------|-------|
-| Docker Desktop | Allocate ≥ 6 GB RAM. `cdp-dev install` will start it automatically if it's not running. |
+| Docker Desktop | Allocate ≥ 6 GB RAM. Started automatically if not running. |
 | Python 3.10+ | Must be installed before pip install |
 
-> `helm`, `kind`, and `kubectl` are installed automatically by `cdp-dev install` if missing.
+> `helm`, `kind`, and `kubectl` are installed automatically if missing.
 
 ---
 
 ## Daily Usage
 
 ```bash
-cdp-dev start     # resume after reboot
-cdp-dev status    # check pod health
-cdp-dev logs      # tail Airflow logs
-cdp-dev stop      # pause at end of day
+# These both work after first run:
+python -m cdp_dev start     # always works
+cdp-dev start               # works after first run
+
+cdp-dev status
+cdp-dev logs
+cdp-dev stop
 ```
 
 ---
@@ -62,7 +52,8 @@ cdp-dev stop      # pause at end of day
 
 | Command | Description |
 |---------|-------------|
-| `cdp-dev install` | First-time setup |
+| `python -m cdp_dev install` | First-time setup (always works) |
+| `cdp-dev install` | First-time setup (works after first run) |
 | `cdp-dev start` | Resume after reboot or stop |
 | `cdp-dev stop` | Pause cluster (data preserved) |
 | `cdp-dev status` | Pod health + port-forward status |
