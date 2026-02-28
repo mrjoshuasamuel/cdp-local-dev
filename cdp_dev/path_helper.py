@@ -1,27 +1,66 @@
 """
 path_helper.py
-Automatically detects and fixes the PATH for this specific machine and user.
-Never hardcodes any paths — uses sysconfig to find where pip installed scripts.
+Finds the actual Scripts directory where cdp-dev was installed,
+handling the Windows Microsoft Store Python split-brain case.
 """
 import os
 import sys
+import site
 import platform
 import sysconfig
 from pathlib import Path
 
 
-def get_scripts_dir() -> Path:
+def find_scripts_dir() -> Path | None:
     """
-    Returns the directory where pip installs console_scripts entry points.
-    This is always correct for the current Python installation and user,
-    regardless of OS, username, or Python version.
+    Find the Scripts directory that actually contains cdp-dev.
+    Checks all plausible locations in order.
+    """
+    exe_name = "cdp-dev.exe" if platform.system() == "Windows" else "cdp-dev"
+    candidates = _all_candidate_dirs()
 
-    Examples:
-      Windows: C:\\Users\\<username>\\AppData\\Local\\...\\Scripts
-      macOS:   /Users/<username>/Library/Python/3.11/bin
-      Linux:   /home/<username>/.local/bin
-    """
+    for candidate in candidates:
+        if (candidate / exe_name).exists():
+            return candidate
+
+    # Fallback — return sysconfig default even if exe not found there
     return Path(sysconfig.get_path("scripts"))
+
+
+def _all_candidate_dirs() -> list:
+    candidates = []
+
+    # Standard sysconfig path
+    candidates.append(Path(sysconfig.get_path("scripts")))
+
+    # User base Scripts (pip install --user target)
+    if hasattr(site, "getuserbase"):
+        base = Path(site.getuserbase())
+        candidates.append(base / ("Scripts" if platform.system() == "Windows" else "bin"))
+
+    # Microsoft Store Python — scan the Packages directory
+    if platform.system() == "Windows":
+        packages = Path.home() / "AppData" / "Local" / "Packages"
+        if packages.exists():
+            for pkg in sorted(packages.glob("PythonSoftwareFoundation.Python.*"), reverse=True):
+                local_cache = pkg / "LocalCache" / "local-packages"
+                if local_cache.exists():
+                    for py_ver in sorted(local_cache.glob("Python*"), reverse=True):
+                        candidates.append(py_ver / "Scripts")
+
+    return candidates
+
+
+def ensure_on_path():
+    """Add the correct Scripts dir to PATH for the current process."""
+    scripts_dir = find_scripts_dir()
+    if scripts_dir is None:
+        return
+    scripts_str = str(scripts_dir)
+    current = os.environ.get("PATH", "")
+    if scripts_str not in current:
+        sep = ";" if platform.system() == "Windows" else ":"
+        os.environ["PATH"] = current + sep + scripts_str
 
 
 def is_cdpdev_on_path() -> bool:
@@ -29,64 +68,36 @@ def is_cdpdev_on_path() -> bool:
     return shutil.which("cdp-dev") is not None
 
 
-def ensure_on_path():
-    """
-    Silently adds the Scripts dir to PATH for the current process.
-    Called at startup of every CLI command so cdp-dev always works
-    even if the user hasn't run bootstrap.py yet.
-    """
-    scripts_dir = str(get_scripts_dir())
-    current_path = os.environ.get("PATH", "")
-
-    if scripts_dir not in current_path:
-        if platform.system() == "Windows":
-            os.environ["PATH"] = current_path + ";" + scripts_dir
-        else:
-            os.environ["PATH"] = scripts_dir + ":" + current_path
+def get_scripts_dir() -> Path:
+    return find_scripts_dir() or Path(sysconfig.get_path("scripts"))
 
 
 def fix_path_windows():
-    """
-    Persist the Scripts directory to the Windows user PATH registry key
-    so it survives terminal restarts. Also broadcasts the change so new
-    terminals pick it up immediately without a reboot.
-    Uses sysconfig — no hardcoded paths.
-    """
     if platform.system() != "Windows":
         return
 
-    scripts_dir = str(get_scripts_dir())
+    scripts_dir = find_scripts_dir()
+    if scripts_dir is None:
+        return
 
-    # Fix current process immediately
     ensure_on_path()
+    scripts_str = str(scripts_dir)
 
     try:
-        import winreg
-        import ctypes
-
-        key = winreg.OpenKey(
-            winreg.HKEY_CURRENT_USER,
-            "Environment",
-            0,
-            winreg.KEY_READ | winreg.KEY_WRITE
-        )
+        import winreg, ctypes
+        key = winreg.OpenKey(winreg.HKEY_CURRENT_USER, "Environment",
+                             0, winreg.KEY_READ | winreg.KEY_WRITE)
         try:
             current, _ = winreg.QueryValueEx(key, "Path")
         except FileNotFoundError:
             current = ""
 
-        if scripts_dir.lower() not in current.lower():
-            new_path = f"{current};{scripts_dir}" if current else scripts_dir
+        if scripts_str.lower() not in current.lower():
+            new_path = f"{current};{scripts_str}" if current else scripts_str
             winreg.SetValueEx(key, "Path", 0, winreg.REG_EXPAND_SZ, new_path)
-
-            # Broadcast so open terminals and new terminals pick up the change
-            HWND_BROADCAST   = 0xFFFF
-            WM_SETTINGCHANGE = 0x001A
             ctypes.windll.user32.SendMessageTimeoutW(
-                HWND_BROADCAST, WM_SETTINGCHANGE, 0, "Environment", 2, 5000, None
+                0xFFFF, 0x001A, 0, "Environment", 2, 5000, None
             )
-
         winreg.CloseKey(key)
-
     except Exception:
-        pass  # Silently skip — ensure_on_path() already fixed the current session
+        pass
