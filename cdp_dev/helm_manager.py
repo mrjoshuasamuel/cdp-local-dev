@@ -113,17 +113,24 @@ def preload_airflow_image(cluster_name: str = "cdp-local"):
         console.print(f"[yellow]     Continuing — Kind will pull it directly (slower).[/yellow]")
         return
 
-    # Step 2: Load into Kind node
+    # Step 2: Load into Kind node (retry once — image index may take a moment to register)
     console.print(f"[dim]  kind load docker-image {AIRFLOW_IMAGE} --name {cluster_name} ...[/dim]")
-    result = _run(
-        ["kind", "load", "docker-image", AIRFLOW_IMAGE, "--name", cluster_name],
-        check=False, capture=True
-    )
-    if result.returncode == 0:
-        console.print(f"[green]  ✓  Image loaded into Kind (pod scheduling will be instant).[/green]")
-    else:
-        console.print(f"[yellow]  ⚠  kind load failed: {result.stderr.strip()[:120]}[/yellow]")
+    for attempt in range(2):
+        result = _run(
+            ["kind", "load", "docker-image", AIRFLOW_IMAGE, "--name", cluster_name],
+            check=False, capture=True
+        )
+        if result.returncode == 0:
+            console.print(f"[green]  ✓  Image loaded into Kind (pod scheduling will be instant).[/green]")
+            break
+        err = (result.stderr or result.stdout or "").strip()
+        if "not yet present" in err and attempt == 0:
+            console.print(f"[dim]  Image index not ready yet — retrying in 3s...[/dim]")
+            time.sleep(3)
+            continue
+        console.print(f"[yellow]  ⚠  kind load failed: {err[:120]}[/yellow]")
         console.print(f"[yellow]     Continuing — Kind will pull from Docker Hub (may be slow).[/yellow]")
+        break
 
 
 # ── Pod / Job inspection helpers ──────────────────────────────────────────────
@@ -470,6 +477,94 @@ def _watch_airflow(namespace: str, timeout_seconds: int = 1200):
 
 # ── Public API ─────────────────────────────────────────────────────────────────
 
+# Error substrings that mean a StatefulSet spec is immutable and must be
+# deleted before Helm can re-create it with the new spec.
+_STATEFULSET_IMMUTABLE_ERRORS = [
+    "updates to statefulset spec for fields other than",
+    "StatefulSet.apps",
+    "spec: Forbidden",
+    "Forbidden: updates to statefulset",
+]
+
+
+def _is_statefulset_conflict(stderr: str) -> bool:
+    return any(msg in stderr for msg in _STATEFULSET_IMMUTABLE_ERRORS)
+
+
+def _fix_statefulset_conflict(namespace: str = "airflow"):
+    """
+    When Helm fails because a StatefulSet spec is immutable (e.g. the old
+    install had persistence=true and the new one has persistence=false),
+    Kubernetes forbids the upgrade.
+
+    The only fix is to delete the conflicting StatefulSet(s) so Helm can
+    re-create them with the new spec. The pods are recreated automatically.
+    Data is NOT lost because we now run with persistence=false (no PVC).
+    """
+    console.print()
+    console.print("[yellow]  ⚠  Detected immutable StatefulSet conflict from a previous install.[/yellow]")
+    console.print("[yellow]     This happens when persistence settings changed between runs.[/yellow]")
+    console.print("[cyan]  Auto-fixing: deleting conflicting StatefulSets so Helm can recreate them...[/cyan]")
+
+    # Find all StatefulSets in the namespace
+    result = _run(
+        ["kubectl", "get", "statefulsets", "-n", namespace,
+         "-o", "custom-columns=NAME:.metadata.name", "--no-headers"],
+        check=False, capture=True
+    )
+
+    statefulsets = [line.strip() for line in result.stdout.splitlines() if line.strip()]
+
+    if not statefulsets:
+        console.print("[yellow]  No StatefulSets found to delete — Helm may self-recover.[/yellow]")
+        return
+
+    for ss in statefulsets:
+        console.print(f"[cyan]  Deleting StatefulSet: [bold]{ss}[/bold]...[/cyan]")
+        del_result = _run(
+            ["kubectl", "delete", "statefulset", ss, "-n", namespace,
+             "--cascade=orphan",   # delete the StatefulSet object but keep pods running
+             "--ignore-not-found"],
+            check=False, capture=True
+        )
+        if del_result.returncode == 0:
+            console.print(f"[green]  ✓  Deleted StatefulSet '{ss}'.[/green]")
+        else:
+            console.print(f"[yellow]  ⚠  Could not delete '{ss}': {del_result.stderr.strip()[:80]}[/yellow]")
+
+    # Also delete any orphaned PVCs from the old persistence=true install,
+    # since those are what originally caused the immutable spec mismatch.
+    pvc_result = _run(
+        ["kubectl", "get", "pvc", "-n", namespace,
+         "-o", "custom-columns=NAME:.metadata.name", "--no-headers"],
+        check=False, capture=True
+    )
+    pvcs = [line.strip() for line in pvc_result.stdout.splitlines() if line.strip()]
+    if pvcs:
+        console.print(f"[cyan]  Deleting {len(pvcs)} orphaned PVC(s) from previous install...[/cyan]")
+        for pvc in pvcs:
+            _run(["kubectl", "delete", "pvc", pvc, "-n", namespace, "--ignore-not-found"],
+                 check=False, capture=True)
+        console.print(f"[green]  ✓  PVCs cleared.[/green]")
+
+    console.print("[green]  ✓  Conflict resolved. Retrying Helm install...[/green]")
+    console.print()
+
+
+def _run_helm_install(values_file: Path) -> subprocess.CompletedProcess:
+    """Run the helm upgrade --install command and return the result."""
+    cmd = [
+        "helm", "upgrade", "--install", "airflow",
+        "apache-airflow/airflow",
+        "--version",   AIRFLOW_CHART_VERSION,
+        "--namespace", "airflow",
+        "--values",    str(values_file),
+        "--timeout",   "5m",
+        # No --wait — we poll progress ourselves
+    ]
+    return _run(cmd, check=False, capture=True)
+
+
 def install_airflow(cluster_name: str = "cdp-local"):
     values_file = _helm_dir() / "values" / "airflow.yaml"
 
@@ -487,24 +582,37 @@ def install_airflow(cluster_name: str = "cdp-local"):
 
     create_namespace("airflow")
 
-    # Helm creates resources but does NOT wait — we handle progress ourselves
-    cmd = [
-        "helm", "upgrade", "--install", "airflow",
-        "apache-airflow/airflow",
-        "--version",   AIRFLOW_CHART_VERSION,
-        "--namespace", "airflow",
-        "--values",    str(values_file),
-        "--timeout",   "5m",
-        # No --wait, no --wait-for-jobs — we poll ourselves below
-    ]
-
+    # ── First Helm attempt ────────────────────────────────────────────────────
     console.print("[cyan]  Submitting resources to Kubernetes...[/cyan]")
-    result = _run(cmd, check=False, capture=True)
+    result = _run_helm_install(values_file)
 
     if result.returncode != 0:
         stderr = result.stderr or ""
+
         if "context deadline exceeded" in stderr or "InProgress" in stderr:
+            # Helm timed out waiting for jobs but resources were created — fine
             console.print("[yellow]  ⚠  Helm returned timeout (resources were still created — continuing to watch)[/yellow]")
+
+        elif _is_statefulset_conflict(stderr):
+            # ── Auto-fix: delete immutable StatefulSets and retry once ────────
+            _fix_statefulset_conflict("airflow")
+
+            console.print("[cyan]  Submitting resources to Kubernetes (attempt 2 of 2)...[/cyan]")
+            result2 = _run_helm_install(values_file)
+
+            if result2.returncode != 0:
+                stderr2 = result2.stderr or ""
+                if "context deadline exceeded" in stderr2 or "InProgress" in stderr2:
+                    console.print("[yellow]  ⚠  Helm returned timeout (resources were still created — continuing to watch)[/yellow]")
+                else:
+                    console.print("[bold red]✗  Helm install failed (even after StatefulSet fix).[/bold red]")
+                    console.print(stderr2 or result2.stdout)
+                    console.print()
+                    console.print("  Try a full reset:  [yellow]cdp-dev destroy[/yellow]  then  [yellow]cdp-dev install[/yellow]")
+                    sys.exit(1)
+            else:
+                console.print("[green]  ✓  Resources submitted.[/green]")
+
         else:
             console.print("[bold red]✗  Helm install failed.[/bold red]")
             console.print(stderr or result.stdout)
