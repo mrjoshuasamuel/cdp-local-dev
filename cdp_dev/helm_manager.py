@@ -52,6 +52,10 @@ def _sanitize_airflow_values(values_path: Path):
         changed = True
         console.print("[yellow]  ⚠  Fixed: generated valid Fernet key[/yellow]")
 
+    # Remove keys that fail schema validation in this chart version
+    for bad_key in ("createUserJob", "migrateDatabaseJob"):
+        values.pop(bad_key, None)
+
     # Always pin image tag
     values.setdefault("images", {}).setdefault("airflow", {})
     values["images"]["airflow"]["repository"] = "apache/airflow"
