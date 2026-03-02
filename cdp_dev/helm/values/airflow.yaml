@@ -1,18 +1,13 @@
-# ─────────────────────────────────────────────────────────────────────────────
-# CDP Local Dev — Apache Airflow Helm Values
-# Chart: apache-airflow/airflow  v1.13.x
-#
-# Optimised for a single-node Kind cluster on a developer laptop.
-# Uses LocalExecutor (no Celery/Redis) to keep RAM usage under 2 GB.
-# ─────────────────────────────────────────────────────────────────────────────
-
-# ── Executor ─────────────────────────────────────────────────────────────────
 executor: LocalExecutor
-
-# ── Airflow version ───────────────────────────────────────────────────────────
 airflowVersion: "2.9.3"
 
-# ── Default admin credentials ─────────────────────────────────────────────────
+# Pin the image explicitly so Helm chart version changes don't pull a newer image
+images:
+  airflow:
+    repository: apache/airflow
+    tag: "2.9.3"
+    pullPolicy: IfNotPresent
+
 webserver:
   defaultUser:
     enabled:   true
@@ -22,17 +17,8 @@ webserver:
     firstName: CDP
     lastName:  Admin
     password:  admin
-
-  # NodePort so Kind's extraPortMappings (30080 → localhost:8080) works
   service:
-    type: NodePort
-    ports:
-      - name:       airflow-ui
-        port:       8080
-        targetPort: 8080
-        nodePort:   30080
-
-  # Slim resource limits for laptop use
+    type: ClusterIP
   resources:
     requests:
       memory: "512Mi"
@@ -41,7 +27,6 @@ webserver:
       memory: "1Gi"
       cpu:    "500m"
 
-# ── Scheduler ─────────────────────────────────────────────────────────────────
 scheduler:
   resources:
     requests:
@@ -51,7 +36,6 @@ scheduler:
       memory: "1Gi"
       cpu:    "500m"
 
-# ── Triggerer ─────────────────────────────────────────────────────────────────
 triggerer:
   enabled: true
   resources:
@@ -62,7 +46,6 @@ triggerer:
       memory: "512Mi"
       cpu:    "300m"
 
-# ── Metadata DB ───────────────────────────────────────────────────────────────
 postgresql:
   enabled: true
   auth:
@@ -84,41 +67,49 @@ postgresql:
         memory: "512Mi"
         cpu:    "300m"
 
-# ── DAGs ───────────────────────────────────────────────────────────────────────
 dags:
   persistence:
     enabled: false
   gitSync:
     enabled: false
 
-# ── Logs ───────────────────────────────────────────────────────────────────────
 logs:
   persistence:
     enabled: false
 
-# ── Redis (not needed with LocalExecutor) ──────────────────────────────────────
 redis:
   enabled: false
 
-# ── Flower (not needed with LocalExecutor) ─────────────────────────────────────
 flower:
   enabled: false
 
-# ── Workers (not needed with LocalExecutor) ────────────────────────────────────
 workers:
   replicas: 0
 
-# ── StatsD — disabled to save RAM ─────────────────────────────────────────────
 statsd:
   enabled: false
 
-# ── Environment variables ──────────────────────────────────────────────────────
 env:
   - name:  LOCAL_MODE
     value: "true"
 
-# ── Fernet key ────────────────────────────────────────────────────────────────
 fernetKey: "qwerty12345678901234567890123456789012345="
-
-# ── Secret key ────────────────────────────────────────────────────────────────
 webserverSecretKey: "cdp-local-dev-secret-key-change-in-prod"
+
+# Give migration and user-creation jobs enough time to complete
+migrateDatabaseJob:
+  enabled: true
+  jobAnnotations:
+    "helm.sh/hook": post-install,post-upgrade
+    "helm.sh/hook-weight": "1"
+  resources:
+    requests:
+      memory: "256Mi"
+      cpu:    "100m"
+
+createUserJob:
+  enabled: true
+  resources:
+    requests:
+      memory: "256Mi"
+      cpu:    "100m"
