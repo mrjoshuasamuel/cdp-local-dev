@@ -46,10 +46,23 @@ def _save_state(data: dict):
 
 
 def _pid_alive(pid: int) -> bool:
+    import platform
+    if platform.system() == "Windows":
+        try:
+            import ctypes
+            handle = ctypes.windll.kernel32.OpenProcess(1, False, pid)
+            if not handle:
+                return False
+            exit_code = ctypes.c_ulong()
+            ctypes.windll.kernel32.GetExitCodeProcess(handle, ctypes.byref(exit_code))
+            ctypes.windll.kernel32.CloseHandle(handle)
+            return exit_code.value == 259  # STILL_ACTIVE
+        except Exception:
+            return False
     try:
         os.kill(pid, 0)
         return True
-    except (ProcessLookupError, PermissionError):
+    except (ProcessLookupError, PermissionError, OSError):
         return False
 
 
