@@ -19,6 +19,7 @@ console = Console()
 
 AIRFLOW_CHART_VERSION = "1.15.0"
 AIRFLOW_IMAGE_TAG     = "2.9.3"
+AIRFLOW_IMAGE         = f"apache/airflow:{AIRFLOW_IMAGE_TAG}"
 
 
 def _run(cmd: list, check: bool = True, capture: bool = False) -> subprocess.CompletedProcess:
@@ -93,7 +94,39 @@ def create_namespace(ns: str):
         console.print(f"[dim]  Namespace '{ns}' already exists.[/dim]")
 
 
-# ── Live progress display ──────────────────────────────────────────────────────
+# ── Pre-pull image into Kind ───────────────────────────────────────────────────
+
+def preload_airflow_image(cluster_name: str = "cdp-local"):
+    """
+    Pull apache/airflow image on the host and load it into Kind so the
+    Kubernetes node never needs to pull it again. This avoids pod-stuck-Pending
+    from ImagePullBackOff and dramatically speeds up first-run installs.
+    """
+    console.print(f"[cyan]  Pre-loading image into Kind cluster (avoids in-cluster pull)...[/cyan]")
+    console.print(f"[dim]  Image: {AIRFLOW_IMAGE}[/dim]")
+
+    # Step 1: Pull on host (may be cached already)
+    console.print(f"[dim]  docker pull {AIRFLOW_IMAGE} ...[/dim]")
+    result = _run(["docker", "pull", AIRFLOW_IMAGE], check=False, capture=True)
+    if result.returncode != 0:
+        console.print(f"[yellow]  ⚠  Could not pull {AIRFLOW_IMAGE}: {result.stderr.strip()}[/yellow]")
+        console.print(f"[yellow]     Continuing — Kind will pull it directly (slower).[/yellow]")
+        return
+
+    # Step 2: Load into Kind node
+    console.print(f"[dim]  kind load docker-image {AIRFLOW_IMAGE} --name {cluster_name} ...[/dim]")
+    result = _run(
+        ["kind", "load", "docker-image", AIRFLOW_IMAGE, "--name", cluster_name],
+        check=False, capture=True
+    )
+    if result.returncode == 0:
+        console.print(f"[green]  ✓  Image loaded into Kind (pod scheduling will be instant).[/green]")
+    else:
+        console.print(f"[yellow]  ⚠  kind load failed: {result.stderr.strip()[:120]}[/yellow]")
+        console.print(f"[yellow]     Continuing — Kind will pull from Docker Hub (may be slow).[/yellow]")
+
+
+# ── Pod / Job inspection helpers ──────────────────────────────────────────────
 
 def _get_pods(namespace: str) -> list:
     result = _run(
@@ -132,30 +165,86 @@ def _get_jobs(namespace: str) -> list:
         parts = line.split()
         if parts:
             jobs.append({
-                "name":       parts[0],
-                "succeeded":  parts[1] if len(parts) > 1 else "0",
-                "condition":  parts[2] if len(parts) > 2 else "InProgress",
+                "name":      parts[0],
+                "succeeded": parts[1] if len(parts) > 1 else "0",
+                "condition": parts[2] if len(parts) > 2 else "InProgress",
             })
     return jobs
 
 
-def _build_progress_table(namespace: str, elapsed: int) -> Panel:
+def _get_pod_pending_reason(namespace: str, pod_name: str) -> str:
+    """
+    Return a short human-readable reason why a pod is stuck Pending.
+    Reads the pod's events from `kubectl describe pod`.
+    """
+    result = _run(
+        ["kubectl", "describe", "pod", pod_name, "-n", namespace],
+        check=False, capture=True
+    )
+    text = result.stdout
+
+    # Scan the Events section for common failure reasons
+    reasons = []
+    for line in text.splitlines():
+        l = line.strip()
+        if any(kw in l for kw in [
+            "Insufficient memory", "Insufficient cpu",
+            "did not have enough resource",
+            "nodes are available",
+            "0/1 nodes",
+            "FailedScheduling",
+        ]):
+            # Extract the meaningful part after "Warning  FailedScheduling"
+            if "FailedScheduling" in l or "Insufficient" in l or "nodes are available" in l:
+                # Grab the end of the line (the actual message)
+                msg = l.split("  ")[-1].strip()
+                if msg and msg not in reasons:
+                    reasons.append(msg[:90])
+
+        if "ImagePullBackOff" in l or "ErrImagePull" in l or "Failed to pull image" in l:
+            if "image pull" not in " ".join(reasons).lower():
+                reasons.append("ImagePullBackOff — image pull failed (check network/Docker Hub)")
+
+        if "Unschedulable" in l and "taint" in l.lower():
+            reasons.append("Node taint preventing scheduling")
+
+    # Also check PVC bindings
+    if "pod has unbound immediate PersistentVolumeClaims" in text:
+        reasons.append("PVC unbound — PersistentVolumeClaim not provisioned")
+
+    return "; ".join(reasons) if reasons else ""
+
+
+def _get_crash_reason(namespace: str, pod_name: str) -> str:
+    """Return a short reason for a CrashLoopBackOff or Error pod."""
+    result = _run(
+        ["kubectl", "logs", pod_name, "-n", namespace, "--tail=5"],
+        check=False, capture=True
+    )
+    lines = [l.strip() for l in result.stdout.splitlines() if l.strip()]
+    return lines[-1][:100] if lines else ""
+
+
+# ── Live progress table ────────────────────────────────────────────────────────
+
+def _build_progress_table(namespace: str, elapsed: int, pending_reasons: dict) -> Panel:
     pods = _get_pods(namespace)
     jobs = _get_jobs(namespace)
 
     table = Table(box=box.SIMPLE, show_header=True, expand=True)
     table.add_column("Component",  style="cyan",  no_wrap=True, min_width=35)
-    table.add_column("Status",     justify="center", min_width=12)
+    table.add_column("Status",     justify="center", min_width=14)
     table.add_column("Ready",      justify="center", min_width=8)
     table.add_column("Restarts",   justify="center", min_width=8)
+    table.add_column("Note",       style="dim",    min_width=30)
 
     # Jobs first (migrations run before pods start)
     for j in jobs:
         done = j["condition"] == "Complete" or j["succeeded"] not in ("0", "<none>", "")
-        status_fmt  = "[green]✓  Complete[/green]" if done else "[yellow]⏳ Running[/yellow]"
-        ready_fmt   = "[green]✓[/green]"            if done else "[dim]—[/dim]"
-        short       = j["name"].replace("airflow-", "")
-        table.add_row(f"[dim]{short}[/dim]", status_fmt, ready_fmt, "—")
+        status_fmt = "[green]✓  Complete[/green]" if done else "[yellow]⏳ Running[/yellow]"
+        ready_fmt  = "[green]✓[/green]"            if done else "[dim]—[/dim]"
+        short      = j["name"].replace("airflow-", "")
+        table.add_row(f"[dim]{short}[/dim]", status_fmt, ready_fmt, "—", "")
 
     # Pods
     for p in pods:
@@ -163,6 +252,7 @@ def _build_progress_table(namespace: str, elapsed: int) -> Panel:
         status   = p["status"]
         ready    = p["ready"]
         restarts = p["restarts"]
+        note     = ""
 
         if status == "Running" and ready == "true":
             status_fmt = "[green]✓  Running[/green]"
@@ -173,15 +263,21 @@ def _build_progress_table(namespace: str, elapsed: int) -> Panel:
         elif status == "Pending":
             status_fmt = "[yellow]⏳ Pending[/yellow]"
             ready_fmt  = "[dim]—[/dim]"
+            # Show cached pending reason (expensive call only every 30s)
+            note = pending_reasons.get(p["name"], "waiting for scheduler…")
         elif status == "Succeeded":
             status_fmt = "[green]✓  Done[/green]"
             ready_fmt  = "[green]✓[/green]"
+        elif status in ("CrashLoopBackOff", "Error", "OOMKilled"):
+            status_fmt = f"[bold red]✗  {status}[/bold red]"
+            ready_fmt  = "[red]✗[/red]"
+            note = pending_reasons.get(p["name"], "")
         else:
             status_fmt = f"[red]{status}[/red]"
             ready_fmt  = "[red]✗[/red]"
 
         restart_fmt = f"[red]{restarts}[/red]" if restarts not in ("0", "<none>", "") else "[dim]0[/dim]"
-        table.add_row(short, status_fmt, ready_fmt, restart_fmt)
+        table.add_row(short, status_fmt, ready_fmt, restart_fmt, note)
 
     mins, secs = divmod(elapsed, 60)
     title = (
@@ -200,7 +296,7 @@ def _all_ready(namespace: str) -> bool:
     if not pods:
         return False
 
-    # Need at least webserver, scheduler, triggerer
+    # Need at least webserver, scheduler, triggerer, postgresql
     core = [p for p in pods if any(
         x in p["name"] for x in ["webserver", "scheduler", "triggerer", "postgresql"]
     )]
@@ -221,55 +317,174 @@ def _all_ready(namespace: str) -> bool:
     return pods_ok and jobs_ok
 
 
+def _has_fatal_error(namespace: str) -> tuple[bool, str]:
+    """
+    Detect unrecoverable errors early so we can bail out with a useful message
+    instead of waiting for the full 20-minute timeout.
+
+    Returns (is_fatal, reason_string).
+    """
+    pods = _get_pods(namespace)
+    for p in pods:
+        name   = p["name"]
+        status = p["status"]
+        restarts = p.get("restarts", "0")
+
+        # CrashLoopBackOff after multiple restarts = probably a config error
+        try:
+            restart_count = int(restarts)
+        except ValueError:
+            restart_count = 0
+
+        if status in ("CrashLoopBackOff", "Error", "OOMKilled"):
+            if restart_count >= 3 or status in ("Error", "OOMKilled"):
+                last_log = _get_crash_reason(namespace, name)
+                reason = f"Pod '{name}' in {status}"
+                if last_log:
+                    reason += f": {last_log}"
+                return True, reason
+
+        # ImagePullBackOff = won't recover without intervention
+        if status == "Pending":
+            raw = _run(
+                ["kubectl", "get", "pod", name, "-n", namespace, "-o", "jsonpath={.status.containerStatuses[0].state.waiting.reason}"],
+                check=False, capture=True
+            ).stdout.strip()
+            if raw in ("ImagePullBackOff", "ErrImagePull"):
+                return True, f"Pod '{name}': {raw} — Docker Hub pull failed. Check your network connection."
+
+    return False, ""
+
+
+def _print_failure_diagnostics(namespace: str):
+    """Print actionable kubectl commands to diagnose failures."""
+    console.print()
+    console.print("[bold red]  Diagnostic information:[/bold red]")
+    console.print()
+
+    # Show pod statuses
+    result = _run(["kubectl", "get", "pods", "-n", namespace], check=False, capture=True)
+    if result.stdout:
+        console.print("[yellow]  Pod statuses:[/yellow]")
+        for line in result.stdout.splitlines():
+            console.print(f"    {line}")
+
+    # Show events (most useful for resource/scheduling failures)
+    console.print()
+    console.print("[yellow]  Recent warning events:[/yellow]")
+    result = _run(
+        ["kubectl", "get", "events", "-n", namespace,
+         "--field-selector=type=Warning",
+         "--sort-by=.lastTimestamp"],
+        check=False, capture=True
+    )
+    if result.stdout:
+        for line in result.stdout.splitlines()[-15:]:  # last 15 warnings
+            console.print(f"    {line}")
+    else:
+        console.print("    (no warning events)")
+
+    # Resource summary
+    console.print()
+    console.print("[yellow]  Node resource usage:[/yellow]")
+    result = _run(["kubectl", "describe", "nodes"], check=False, capture=True)
+    for line in result.stdout.splitlines():
+        if any(kw in line for kw in ["Allocatable", "Allocated", "cpu:", "memory:", "Requests", "Limits"]):
+            console.print(f"    {line}")
+
+    console.print()
+    console.print("  [bold]Next steps:[/bold]")
+    console.print("  [yellow]kubectl get pods -n airflow[/yellow]")
+    console.print("  [yellow]kubectl describe pod <pod-name> -n airflow[/yellow]")
+    console.print("  [yellow]kubectl logs airflow-scheduler-0 -n airflow -c wait-for-airflow-migrations[/yellow]")
+    console.print()
+    console.print("  [dim]Most common fixes:[/dim]")
+    console.print("  [dim]• Increase Docker Desktop memory to 6GB+  (Docker Desktop → Settings → Resources)[/dim]")
+    console.print("  [dim]• Run:  cdp-dev destroy  then  cdp-dev install  to start fresh[/dim]")
+
+
+# ── Main watcher ──────────────────────────────────────────────────────────────
+
 def _watch_airflow(namespace: str, timeout_seconds: int = 1200):
     """
     Live-updating progress display showing every pod and job status.
     Updates every 5 seconds until everything is ready or timeout.
+    Shows pending reasons and detects fatal errors early.
     """
     console.print()
     start = time.time()
+    pending_reasons: dict = {}   # pod_name → reason string (refreshed every 30s)
+    last_reason_refresh = 0
 
     with Live(console=console, refresh_per_second=0.5, transient=False) as live:
         while True:
             elapsed = int(time.time() - start)
 
+            # ── Refresh pending reasons every 30 seconds (expensive kubectl describe) ──
+            if elapsed - last_reason_refresh >= 30:
+                pods = _get_pods(namespace)
+                for p in pods:
+                    if p["status"] == "Pending":
+                        reason = _get_pod_pending_reason(namespace, p["name"])
+                        if reason:
+                            pending_reasons[p["name"]] = reason
+                    elif p["status"] in ("CrashLoopBackOff", "Error", "OOMKilled"):
+                        reason = _get_crash_reason(namespace, p["name"])
+                        if reason:
+                            pending_reasons[p["name"]] = reason
+                last_reason_refresh = elapsed
+
+            # ── Timeout ──────────────────────────────────────────────────────
             if elapsed > timeout_seconds:
                 live.stop()
                 console.print()
                 console.print("[bold red]✗  Timed out waiting for Airflow.[/bold red]")
-                console.print("  Check what went wrong:")
-                console.print("  [yellow]kubectl get pods -n airflow[/yellow]")
-                console.print("  [yellow]kubectl logs airflow-scheduler-0 -n airflow -c wait-for-airflow-migrations[/yellow]")
+                _print_failure_diagnostics(namespace)
                 sys.exit(1)
 
-            live.update(_build_progress_table(namespace, elapsed))
+            live.update(_build_progress_table(namespace, elapsed, pending_reasons))
 
+            # ── Success ───────────────────────────────────────────────────────
             if _all_ready(namespace):
                 live.stop()
                 console.print()
                 console.print("[bold green]  ✓  All Airflow services are ready![/bold green]")
                 console.print()
-                # Final summary table
-                final = _build_progress_table(namespace, elapsed)
+                final = _build_progress_table(namespace, elapsed, pending_reasons)
                 console.print(final)
                 return
+
+            # ── Early fatal error detection ───────────────────────────────────
+            # Check every 30s after the first minute (give pods time to start)
+            if elapsed > 60 and elapsed % 30 < 5:
+                is_fatal, reason = _has_fatal_error(namespace)
+                if is_fatal:
+                    live.stop()
+                    console.print()
+                    console.print(f"[bold red]✗  Fatal error detected: {reason}[/bold red]")
+                    _print_failure_diagnostics(namespace)
+                    sys.exit(1)
 
             time.sleep(5)
 
 
-# ── Main install function ──────────────────────────────────────────────────────
+# ── Public API ─────────────────────────────────────────────────────────────────
 
-def install_airflow():
+def install_airflow(cluster_name: str = "cdp-local"):
     values_file = _helm_dir() / "values" / "airflow.yaml"
 
     console.print()
     console.print("[bold cyan]Installing Apache Airflow...[/bold cyan]")
     console.print(f"[dim]  Values : {values_file}[/dim]")
     console.print(f"[dim]  Chart  : apache-airflow/airflow v{AIRFLOW_CHART_VERSION}[/dim]")
-    console.print(f"[dim]  Image  : apache/airflow:{AIRFLOW_IMAGE_TAG}[/dim]")
+    console.print(f"[dim]  Image  : {AIRFLOW_IMAGE}[/dim]")
     console.print()
 
     _sanitize_airflow_values(values_file)
+
+    # ── Pre-load image into Kind to avoid in-cluster slow pull ───────────────
+    preload_airflow_image(cluster_name)
+
     create_namespace("airflow")
 
     # Helm creates resources but does NOT wait — we handle progress ourselves
@@ -279,7 +494,7 @@ def install_airflow():
         "--version",   AIRFLOW_CHART_VERSION,
         "--namespace", "airflow",
         "--values",    str(values_file),
-        "--timeout",   "5m",   # just enough for Helm to submit resources
+        "--timeout",   "5m",
         # No --wait, no --wait-for-jobs — we poll ourselves below
     ]
 
@@ -287,8 +502,6 @@ def install_airflow():
     result = _run(cmd, check=False, capture=True)
 
     if result.returncode != 0:
-        # Ignore "context deadline exceeded" from migration job in progress
-        # Helm still created all resources even if it reports this error
         stderr = result.stderr or ""
         if "context deadline exceeded" in stderr or "InProgress" in stderr:
             console.print("[yellow]  ⚠  Helm returned timeout (resources were still created — continuing to watch)[/yellow]")
@@ -299,7 +512,6 @@ def install_airflow():
     else:
         console.print("[green]  ✓  Resources submitted.[/green]")
 
-    # Now watch with live progress until everything is ready
     console.print()
     console.print("[bold]Waiting for Airflow to become ready...[/bold]")
     _watch_airflow("airflow", timeout_seconds=1200)
