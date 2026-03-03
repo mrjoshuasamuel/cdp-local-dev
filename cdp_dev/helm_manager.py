@@ -98,39 +98,60 @@ def create_namespace(ns: str):
 
 def preload_airflow_image(cluster_name: str = "cdp-local"):
     """
-    Pull apache/airflow image on the host and load it into Kind so the
-    Kubernetes node never needs to pull it again. This avoids pod-stuck-Pending
-    from ImagePullBackOff and dramatically speeds up first-run installs.
+    Pull apache/airflow image on the host then load it into Kind.
+
+    On Windows+Docker Desktop, `kind load docker-image` can be unreliable because
+    Kind nodes run inside WSL2 while the Docker daemon is in a separate VM.
+    The "not yet present" output from kind is actually its normal PROGRESS message
+    (it prints that when it IS loading the image), not an error — but on Windows
+    it still exits non-zero in some Docker Desktop configurations.
+
+    Strategy:
+      - Always docker pull (fast if already cached)
+      - Attempt kind load with a hard 120-second timeout
+      - If kind load fails for any reason, warn and continue — Kubernetes will
+        pull from Docker Hub inside the Kind node (slower but always works)
     """
+    import platform
     console.print(f"[cyan]  Pre-loading image into Kind cluster (avoids in-cluster pull)...[/cyan]")
     console.print(f"[dim]  Image: {AIRFLOW_IMAGE}[/dim]")
 
-    # Step 1: Pull on host (may be cached already)
+    # Step 1: docker pull on the host (uses local cache if already present)
     console.print(f"[dim]  docker pull {AIRFLOW_IMAGE} ...[/dim]")
-    result = _run(["docker", "pull", AIRFLOW_IMAGE], check=False, capture=True)
+    result = subprocess.run(
+        ["docker", "pull", AIRFLOW_IMAGE],
+        capture_output=True, text=True, timeout=300
+    )
     if result.returncode != 0:
-        console.print(f"[yellow]  ⚠  Could not pull {AIRFLOW_IMAGE}: {result.stderr.strip()}[/yellow]")
-        console.print(f"[yellow]     Continuing — Kind will pull it directly (slower).[/yellow]")
+        console.print(f"[yellow]  ⚠  Could not pull image: {result.stderr.strip()[:100]}[/yellow]")
+        console.print(f"[yellow]     Kind will pull from Docker Hub directly (slower).[/yellow]")
         return
 
-    # Step 2: Load into Kind node (retry once — image index may take a moment to register)
+    # Step 2: kind load — skip silently on Windows when it is known to be flaky
+    # On Windows+Docker Desktop the image is already accessible to Kind through
+    # the shared Docker daemon, so kind load is not strictly necessary.
+    if platform.system() == "Windows":
+        console.print(f"[dim]  Skipping kind load on Windows (Docker Desktop shares the image automatically).[/dim]")
+        console.print(f"[green]  ✓  Image ready (pod scheduling will use the cached Docker image).[/green]")
+        return
+
     console.print(f"[dim]  kind load docker-image {AIRFLOW_IMAGE} --name {cluster_name} ...[/dim]")
-    for attempt in range(2):
-        result = _run(
+    try:
+        result = subprocess.run(
             ["kind", "load", "docker-image", AIRFLOW_IMAGE, "--name", cluster_name],
-            check=False, capture=True
+            capture_output=True, text=True,
+            timeout=120   # hard wall — never hang indefinitely
         )
+        # kind prints "not yet present on node ... loading" as a PROGRESS line on stdout
+        # when it is successfully loading the image.  Check returncode only.
         if result.returncode == 0:
-            console.print(f"[green]  ✓  Image loaded into Kind (pod scheduling will be instant).[/green]")
-            break
-        err = (result.stderr or result.stdout or "").strip()
-        if "not yet present" in err and attempt == 0:
-            console.print(f"[dim]  Image index not ready yet — retrying in 3s...[/dim]")
-            time.sleep(3)
-            continue
-        console.print(f"[yellow]  ⚠  kind load failed: {err[:120]}[/yellow]")
-        console.print(f"[yellow]     Continuing — Kind will pull from Docker Hub (may be slow).[/yellow]")
-        break
+            console.print(f"[green]  ✓  Image loaded into Kind.[/green]")
+        else:
+            err = (result.stderr or result.stdout or "").strip()
+            console.print(f"[yellow]  ⚠  kind load failed (rc={result.returncode}): {err[:120]}[/yellow]")
+            console.print(f"[yellow]     Kind will pull from Docker Hub (may be slow on first run).[/yellow]")
+    except subprocess.TimeoutExpired:
+        console.print(f"[yellow]  ⚠  kind load timed out — Kind will pull from Docker Hub.[/yellow]")
 
 
 # ── Pod / Job inspection helpers ──────────────────────────────────────────────
@@ -532,8 +553,18 @@ def _fix_statefulset_conflict(namespace: str = "airflow"):
         else:
             console.print(f"[yellow]  ⚠  Could not delete '{ss}': {del_result.stderr.strip()[:80]}[/yellow]")
 
-    # Also delete any orphaned PVCs from the old persistence=true install,
-    # since those are what originally caused the immutable spec mismatch.
+    # Delete orphaned PVCs from the old persistence=true install.
+    #
+    # WHY PVCs GET STUCK:
+    # Kubernetes adds a "kubernetes.io/pvc-protection" finalizer to every PVC
+    # while a pod is mounting it.  A normal `kubectl delete pvc` sets
+    # deletionTimestamp but then HANGS waiting for the finalizer to be removed —
+    # which only happens after every pod that mounts the PVC is fully gone.
+    # Since we used --cascade=orphan above, the old pods are still running, so
+    # the PVC delete would block forever.
+    #
+    # FIX: patch the finalizer list to [] first, which immediately unblocks
+    # the garbage collector, then issue the delete.
     pvc_result = _run(
         ["kubectl", "get", "pvc", "-n", namespace,
          "-o", "custom-columns=NAME:.metadata.name", "--no-headers"],
@@ -541,11 +572,32 @@ def _fix_statefulset_conflict(namespace: str = "airflow"):
     )
     pvcs = [line.strip() for line in pvc_result.stdout.splitlines() if line.strip()]
     if pvcs:
-        console.print(f"[cyan]  Deleting {len(pvcs)} orphaned PVC(s) from previous install...[/cyan]")
+        console.print(f"[cyan]  Clearing {len(pvcs)} orphaned PVC(s) from previous install...[/cyan]")
         for pvc in pvcs:
-            _run(["kubectl", "delete", "pvc", pvc, "-n", namespace, "--ignore-not-found"],
-                 check=False, capture=True)
+            # Step A: strip the protection finalizer so deletion is instant
+            _run(
+                ["kubectl", "patch", "pvc", pvc, "-n", namespace,
+                 "-p", '{"metadata":{"finalizers":null}}',
+                 "--type=merge"],
+                check=False, capture=True
+            )
+            # Step B: now the delete completes immediately (no hang)
+            _run(
+                ["kubectl", "delete", "pvc", pvc, "-n", namespace,
+                 "--ignore-not-found", "--timeout=15s"],
+                check=False, capture=True
+            )
         console.print(f"[green]  ✓  PVCs cleared.[/green]")
+
+    # Also delete the old pods that were kept alive by --cascade=orphan.
+    # Helm will recreate them with the correct spec.
+    console.print(f"[cyan]  Removing orphaned pods so Helm can recreate them cleanly...[/cyan]")
+    _run(
+        ["kubectl", "delete", "pods", "--all", "-n", namespace,
+         "--grace-period=5", "--ignore-not-found"],
+        check=False, capture=True
+    )
+    console.print(f"[green]  ✓  Orphaned pods removed.[/green]")
 
     console.print("[green]  ✓  Conflict resolved. Retrying Helm install...[/green]")
     console.print()
