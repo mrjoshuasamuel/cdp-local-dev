@@ -44,6 +44,7 @@ TOOLS = {
         "choco_pkg":     "kubernetes-helm",
         "brew_pkg":      "helm",
         "linux_hint":    "https://helm.sh/docs/intro/install/",
+        "linux_install_cmd": "mkdir -p ~/.local/bin && curl -fsSL -o get_helm.sh https://raw.githubusercontent.com/helm/helm/main/scripts/get-helm-3 && chmod 700 get_helm.sh && HELM_INSTALL_DIR=~/.local/bin ./get_helm.sh --no-sudo && rm get_helm.sh",
     },
     "kind": {
         "min_version":   (0, 23),
@@ -51,6 +52,7 @@ TOOLS = {
         "choco_pkg":     "kind",
         "brew_pkg":      "kind",
         "linux_hint":    "https://kind.sigs.k8s.io/docs/user/quick-start/",
+        "linux_install_cmd": "mkdir -p ~/.local/bin && curl -Lo ~/.local/bin/kind https://kind.sigs.k8s.io/dl/v0.23.0/kind-linux-amd64 && chmod +x ~/.local/bin/kind",
     },
     "kubectl": {
         "min_version":   (1, 28),
@@ -58,6 +60,7 @@ TOOLS = {
         "choco_pkg":     "kubernetes-cli",
         "brew_pkg":      "kubectl",
         "linux_hint":    "https://kubernetes.io/docs/tasks/tools/",
+        "linux_install_cmd": "mkdir -p ~/.local/bin && curl -Lo ~/.local/bin/kubectl \"https://dl.k8s.io/release/$(curl -L -s https://dl.k8s.io/release/stable.txt)/bin/linux/amd64/kubectl\" && chmod +x ~/.local/bin/kubectl",
     },
 }
 
@@ -236,6 +239,20 @@ def _install_tool_mac(name: str, spec: dict):
     console.print(f"[green]  ✓  {name} installed.[/green]")
 
 
+def _install_tool_linux(name: str, spec: dict):
+    console.print(f"[cyan]  Installing [bold]{name}[/bold] to ~/.local/bin...[/cyan]")
+
+    local_bin = os.path.expanduser("~/.local/bin")
+    if local_bin not in os.environ.get("PATH", "").split(os.pathsep):
+        os.environ["PATH"] = local_bin + os.pathsep + os.environ.get("PATH", "")
+
+    result = _run(["/bin/bash", "-c", spec["linux_install_cmd"]], capture=True)
+    if result.returncode != 0:
+        console.print(f"[red]  ✗  Failed to install {name}:[/red]\n{result.stderr}")
+        sys.exit(1)
+    console.print(f"[green]  ✓  {name} installed.[/green]")
+
+
 def _auto_install(name: str, spec: dict):
     """Install a missing tool automatically based on OS."""
     if IS_WINDOWS:
@@ -244,9 +261,11 @@ def _auto_install(name: str, spec: dict):
     elif IS_MAC:
         _install_brew()
         _install_tool_mac(name, spec)
+    elif IS_LINUX:
+        _install_tool_linux(name, spec)
     else:
-        console.print(f"[red]  ✗  Cannot auto-install [bold]{name}[/bold] on Linux.[/red]")
-        console.print(f"     {spec['linux_hint']}")
+        console.print(f"[red]  ✗  Cannot auto-install [bold]{name}[/bold] on this OS.[/red]")
+        console.print(f"     {spec.get('linux_hint', '')}")
         sys.exit(1)
 
 
