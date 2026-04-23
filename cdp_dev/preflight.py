@@ -18,7 +18,6 @@ import re
 import shutil
 import subprocess
 import sys
-import platform
 import time
 import ctypes
 from dataclasses import dataclass, field
@@ -29,10 +28,9 @@ from rich.table import Table
 from rich.progress import Progress, SpinnerColumn, TextColumn
 from rich import box
 
+from .utils import IS_WINDOWS, IS_MAC, IS_LINUX, is_admin_windows
+
 console = Console()
-IS_WINDOWS = platform.system() == "Windows"
-IS_MAC     = platform.system() == "Darwin"
-IS_LINUX   = platform.system() == "Linux"
 
 
 # ── Tool definitions ──────────────────────────────────────────────────────────
@@ -85,13 +83,6 @@ def _run(cmd: list, capture: bool = False, check: bool = False, timeout: int = 3
     return subprocess.run(cmd, capture_output=capture, text=True, check=check, timeout=timeout)
 
 
-def _is_admin_windows() -> bool:
-    try:
-        return ctypes.windll.shell32.IsUserAnAdmin() != 0
-    except Exception:
-        return False
-
-
 def _relaunch_as_admin_windows():
     """Relaunch the current process with UAC elevation."""
     console.print()
@@ -126,7 +117,7 @@ def _install_choco():
 
     console.print("[cyan]  Installing Chocolatey package manager...[/cyan]")
 
-    if IS_WINDOWS and not _is_admin_windows():
+    if IS_WINDOWS and not is_admin_windows():
         _relaunch_as_admin_windows()
 
     ps_cmd = (
@@ -212,7 +203,7 @@ def _install_tool_windows(name: str, spec: dict):
     pkg = spec["choco_pkg"]
     console.print(f"[cyan]  Installing [bold]{name}[/bold] via Chocolatey...[/cyan]")
 
-    if not _is_admin_windows():
+    if not is_admin_windows():
         _relaunch_as_admin_windows()
 
     result = _run(["choco", "install", pkg, "-y", "--no-progress"], capture=True)

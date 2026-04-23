@@ -17,6 +17,16 @@ import sysconfig
 import ctypes
 from pathlib import Path
 
+try:
+    from cdp_dev.utils import is_admin_windows as _is_admin
+except ImportError:
+    # Fallback if cdp_dev package is not in path
+    def _is_admin() -> bool:
+        try:
+            return ctypes.windll.shell32.IsUserAnAdmin() != 0
+        except Exception:
+            return False
+
 
 # ── Find cdp-dev.exe wherever pip installed it ────────────────────────────────
 
@@ -54,13 +64,6 @@ def _candidate_dirs() -> list:
 
 
 # ── Windows: write cdp-dev.bat into System32 ─────────────────────────────────
-
-def _is_admin() -> bool:
-    try:
-        return ctypes.windll.shell32.IsUserAnAdmin() != 0
-    except Exception:
-        return False
-
 
 def _relaunch_as_admin():
     """Relaunch this script with UAC elevation."""
