@@ -52,7 +52,7 @@ TOOLS = {
         "choco_pkg":     "kind",
         "brew_pkg":      "kind",
         "linux_hint":    "https://kind.sigs.k8s.io/docs/user/quick-start/",
-        "linux_install_cmd": "mkdir -p ~/.local/bin && curl -Lo ~/.local/bin/kind https://kind.sigs.k8s.io/dl/v0.23.0/kind-linux-amd64 && chmod +x ~/.local/bin/kind",
+        "linux_install_cmd": "mkdir -p ~/.local/bin && curl -Lo ~/.local/bin/kind https://kind.sigs.k8s.io/dl/v0.23.0/kind-linux-{arch} && chmod +x ~/.local/bin/kind",
     },
     "kubectl": {
         "min_version":   (1, 28),
@@ -60,7 +60,7 @@ TOOLS = {
         "choco_pkg":     "kubernetes-cli",
         "brew_pkg":      "kubectl",
         "linux_hint":    "https://kubernetes.io/docs/tasks/tools/",
-        "linux_install_cmd": "mkdir -p ~/.local/bin && curl -Lo ~/.local/bin/kubectl \"https://dl.k8s.io/release/$(curl -L -s https://dl.k8s.io/release/stable.txt)/bin/linux/amd64/kubectl\" && chmod +x ~/.local/bin/kubectl",
+        "linux_install_cmd": "mkdir -p ~/.local/bin && curl -Lo ~/.local/bin/kubectl \"https://dl.k8s.io/release/$(curl -L -s https://dl.k8s.io/release/stable.txt)/bin/linux/{arch}/kubectl\" && chmod +x ~/.local/bin/kubectl",
     },
 }
 
@@ -234,6 +234,12 @@ def _install_tool_mac(name: str, spec: dict):
     console.print(f"[cyan]  Installing [bold]{name}[/bold] via Homebrew...[/cyan]")
     result = _run(["brew", "install", pkg], capture=True)
     if result.returncode != 0:
+        if "Cannot install under Rosetta 2" in result.stderr:
+            console.print(f"[yellow]  ⚠  Rosetta 2 detected. Retrying under ARM64...[/yellow]")
+            result = _run(["arch", "-arm64", "brew", "install", pkg], capture=True)
+            if result.returncode == 0:
+                console.print(f"[green]  ✓  {name} installed.[/green]")
+                return
         console.print(f"[red]  ✗  Failed to install {name}:[/red]\n{result.stderr}")
         sys.exit(1)
     console.print(f"[green]  ✓  {name} installed.[/green]")
@@ -246,7 +252,10 @@ def _install_tool_linux(name: str, spec: dict):
     if local_bin not in os.environ.get("PATH", "").split(os.pathsep):
         os.environ["PATH"] = local_bin + os.pathsep + os.environ.get("PATH", "")
 
-    result = _run(["/bin/bash", "-c", spec["linux_install_cmd"]], capture=True)
+    arch = "arm64" if platform.machine().lower() in ("arm64", "aarch64") else "amd64"
+    install_cmd = spec["linux_install_cmd"].format(arch=arch)
+
+    result = _run(["/bin/bash", "-c", install_cmd], capture=True)
     if result.returncode != 0:
         console.print(f"[red]  ✗  Failed to install {name}:[/red]\n{result.stderr}")
         sys.exit(1)
