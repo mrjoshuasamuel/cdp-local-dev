@@ -53,6 +53,14 @@ def _sanitize_airflow_values(values_path: Path):
         changed = True
         console.print("[yellow]  ⚠  Fixed: generated valid Fernet key[/yellow]")
 
+    # Ensure webserverSecretKey is securely generated
+    ws_key = values.get("webserverSecretKey")
+    if not ws_key or ws_key == "cdp-local-dev-secret-key-change-in-prod":
+        import secrets
+        values["webserverSecretKey"] = secrets.token_hex(32)
+        changed = True
+        console.print("[yellow]  ⚠  Fixed: generated secure webserverSecretKey[/yellow]")
+
     # Remove keys that fail schema validation in this chart version
     for bad_key in ("createUserJob", "migrateDatabaseJob"):
         values.pop(bad_key, None)
