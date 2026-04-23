@@ -15,6 +15,8 @@ import sysconfig
 import ctypes
 from pathlib import Path
 
+from .utils import is_admin_windows
+
 
 # ── Find where pip installed cdp-dev ─────────────────────────────────────────
 
@@ -76,13 +78,6 @@ def _bat_is_current(cdp_exe: Path) -> bool:
     return str(cdp_exe) in bat.read_text()
 
 
-def _is_admin_windows() -> bool:
-    try:
-        return ctypes.windll.shell32.IsUserAnAdmin() != 0
-    except Exception:
-        return False
-
-
 def _install_bat_as_admin(cdp_exe: Path):
     """Relaunch current process with UAC to write the .bat file."""
     from rich.console import Console
@@ -121,7 +116,7 @@ def _install_bat_windows(cdp_exe: Path):
     if _bat_is_current(cdp_exe):
         return  # already installed and pointing to right exe
 
-    if _is_admin_windows():
+    if is_admin_windows():
         _write_bat(str(cdp_exe))
     else:
         _install_bat_as_admin(cdp_exe)
