@@ -234,13 +234,15 @@ def _install_tool_mac(name: str, spec: dict):
     console.print(f"[cyan]  Installing [bold]{name}[/bold] via Homebrew...[/cyan]")
     result = _run(["brew", "install", pkg], capture=True)
     if result.returncode != 0:
-        if "Cannot install under Rosetta 2" in result.stderr:
+        output = (result.stderr or "") + (result.stdout or "")
+        if "Rosetta 2" in output:
             console.print(f"[yellow]  ⚠  Rosetta 2 detected. Retrying under ARM64...[/yellow]")
             result = _run(["arch", "-arm64", "brew", "install", pkg], capture=True)
             if result.returncode == 0:
                 console.print(f"[green]  ✓  {name} installed.[/green]")
                 return
-        console.print(f"[red]  ✗  Failed to install {name}:[/red]\n{result.stderr}")
+        err = result.stderr if result.stderr else result.stdout
+        console.print(f"[red]  ✗  Failed to install {name}:[/red]\n{err}")
         sys.exit(1)
     console.print(f"[green]  ✓  {name} installed.[/green]")
 
