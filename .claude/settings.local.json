@@ -1,0 +1,28 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(python -m pip install -e . --quiet)",
+      "Bash(python -m cdp_dev --help)",
+      "Bash(python -m cdp_dev test --help)",
+      "Bash(python -m cdp_dev logs --help)",
+      "Read(//private/tmp/cdp-dev-smoketest/**)",
+      "Bash(python -m cdp_dev install)",
+      "Bash(docker compose *)",
+      "Bash(curl -fsSL http://127.0.0.1:8080/health)",
+      "Bash(python -m cdp_dev status)",
+      "Bash(python -m cdp_dev test hello)",
+      "Bash(python -m cdp_dev stop)",
+      "Bash(python -m cdp_dev start)",
+      "Bash(python -m cdp_dev destroy --yes)",
+      "Bash(git checkout *)",
+      "Bash(git add *)",
+      "Bash(git rm *)",
+      "Bash(git commit -m ' *)",
+      "Bash(git push *)",
+      "Bash(gh auth *)",
+      "Bash(git remote *)",
+      "Bash(ssh-keyscan -t rsa,ed25519 github.com)",
+      "Bash(ssh -o BatchMode=yes -T git@github.com)"
+    ]
+  }
+}

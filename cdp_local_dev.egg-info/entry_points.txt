@@ -1,0 +1,2 @@
+[console_scripts]
+cdp-dev = cdp_dev.cli:main

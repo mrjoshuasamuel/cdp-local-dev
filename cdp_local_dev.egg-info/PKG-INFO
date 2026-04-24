@@ -1,0 +1,7 @@
+Metadata-Version: 2.4
+Name: cdp-local-dev
+Version: 0.2.0
+Summary: CDP Local Developer Environment — Airflow in Docker Compose on your laptop
+Requires-Python: >=3.10
+Requires-Dist: click>=8.1
+Requires-Dist: rich>=13.0
