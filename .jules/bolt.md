@@ -1,0 +1,3 @@
+## 2024-05-15 - [Batch Kubernetes resource deletions]
+**Learning:** To optimize performance in `cdp_dev`, multiple Kubernetes resources of the same type should be deleted in a single batched `kubectl delete` command instead of iterating through a loop. This saves process creation overhead.
+**Action:** When performing `kubectl` deletes, construct a single command line adding all resources at once if possible.
