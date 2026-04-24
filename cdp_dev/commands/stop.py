@@ -7,18 +7,18 @@ console = Console()
 
 @click.command()
 def stop():
-    """Pause the Kind cluster (data is preserved). Resume with cdp-dev start."""
-    from cdp_dev.kind_manager import stop_cluster
-    from cdp_dev.port_forward import stop_all
+    """Pause the Airflow stack (data preserved in the Postgres volume)."""
+    from cdp_dev.project         import require_project_root
+    from cdp_dev.compose_manager import stop as compose_stop
 
     console.print()
     console.print(Rule("[bold]CDP Local Dev — Stop[/bold]"))
 
-    console.print("[cyan]  Stopping port-forwards...[/cyan]")
-    stop_all()
-
-    stop_cluster()
+    project_dir = require_project_root()
+    console.print(f"[cyan]  Stopping containers in[/cyan] {project_dir}")
+    compose_stop(project_dir)
 
     console.print()
-    console.print("[bold green]✓  Environment paused. Run [bold]cdp-dev start[/bold] to resume.[/bold green]")
+    console.print("[green]  ✓  Stack paused.  Your data and DAGs are preserved.[/green]")
+    console.print("    Resume with [bold cyan]cdp-dev start[/bold cyan].")
     console.print()

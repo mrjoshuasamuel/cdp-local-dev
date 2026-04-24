@@ -7,29 +7,28 @@ console = Console()
 
 @click.command()
 @click.confirmation_option(
-    prompt="[red]This will delete the Kind cluster and ALL local data. Are you sure?[/red]"
+    prompt="This will delete containers and the Postgres volume (metadata DB). Your ./dags and ./logs are kept. Continue?"
 )
 def destroy():
     """
-    Delete the Kind cluster and all local state.
+    Delete containers and the Airflow metadata volume.
 
-    WARNING: This is irreversible. All Airflow data, DAGs, and logs
-    stored in the local cluster will be permanently deleted.
+    Your local ./dags, ./logs, and ./plugins directories are NOT touched —
+    only Docker containers and the Postgres named volume are removed.
     Run cdp-dev install to start fresh.
     """
-    from cdp_dev.port_forward import stop_all
-    from cdp_dev.kind_manager import delete_cluster
+    from cdp_dev.project         import require_project_root
+    from cdp_dev.compose_manager import down
 
     console.print()
     console.print(Rule("[bold red]CDP Local Dev — Destroy[/bold red]"))
 
-    console.print("[cyan]  Stopping port-forwards...[/cyan]")
-    stop_all()
-
-    console.print("[cyan]  Deleting Kind cluster...[/cyan]")
-    delete_cluster()
+    project_dir = require_project_root()
+    console.print(f"[cyan]  Removing containers + volumes in[/cyan] {project_dir}")
+    down(project_dir, volumes=True)
 
     console.print()
-    console.print("[bold green]✓  Everything removed.[/bold green]")
-    console.print("   Run [bold cyan]cdp-dev install[/bold cyan] to start fresh.")
+    console.print("[bold green]✓  Containers and metadata DB removed.[/bold green]")
+    console.print("   Your DAGs and logs are preserved in this directory.")
+    console.print("   Run [bold cyan]cdp-dev install[/bold cyan] to rebuild.")
     console.print()

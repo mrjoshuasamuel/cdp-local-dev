@@ -20,20 +20,16 @@ def main():
     """
     CDP Local Developer Environment
 
-    Spin up a local Kubernetes (Kind) cluster with Apache Airflow
-    so you can develop and test pipelines without touching the cloud.
+    Run Apache Airflow locally in Docker Compose so you can develop
+    and test DAGs on your laptop without touching the cloud.
 
     \b
-    Quick start (python -m always works):
-        python -m cdp_dev install   # first time setup
-        python -m cdp_dev status    # check health
-        python -m cdp_dev stop      # pause at end of day
-        python -m cdp_dev start     # resume next morning
-
-    \b
-    After first run, cdp-dev is also available directly:
-        cdp-dev install
-        cdp-dev status
+    Quick start — from inside your pipeline repo:
+        cdp-dev install          # init project + start Airflow
+        # write DAGs under ./dags — scheduler picks them up in ~30s
+        cdp-dev test <dag_id>    # run a DAG end-to-end
+        cdp-dev stop             # pause at end of day
+        cdp-dev start            # resume next morning
     """
     # On every invocation, silently ensure cdp-dev.bat is in System32
     # so the short `cdp-dev` command works in all future terminals
@@ -47,6 +43,7 @@ from cdp_dev.commands.stop    import stop
 from cdp_dev.commands.status  import status
 from cdp_dev.commands.logs    import logs
 from cdp_dev.commands.destroy import destroy
+from cdp_dev.commands.test    import test
 
 main.add_command(install)
 main.add_command(start)
@@ -54,3 +51,4 @@ main.add_command(stop)
 main.add_command(status)
 main.add_command(logs)
 main.add_command(destroy)
+main.add_command(test)

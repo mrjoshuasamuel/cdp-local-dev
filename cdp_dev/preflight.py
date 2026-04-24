@@ -1,186 +1,88 @@
 """
 preflight.py
-Self-healing preflight checks.
+Self-healing preflight checks for the Docker Compose-based stack.
 
-On Windows:
-  - Installs Chocolatey automatically if missing (relaunches as Admin if needed)
-  - Installs helm, kind, kubectl via choco automatically
-  - Waits for Docker Desktop to start if it is not running
+Responsibilities:
+  - Make sure Docker is installed and running (start Docker Desktop if needed).
+  - Make sure `docker compose` V2 is available.  Fall back to legacy `docker-compose`
+    when that's all that's installed.
+  - Nothing else.  Kind/Helm/kubectl are no longer required.
 
-On macOS:
-  - Installs brew if missing
-  - Installs helm, kind, kubectl via brew automatically
-
-Never stops and says "fix it yourself" — it fixes it.
+The _install_brew / _install_choco helpers are kept for future use but only
+invoked as a last resort when Docker itself needs installing.
 """
+from __future__ import annotations
+
 import os
-import re
 import shutil
 import subprocess
 import sys
 import time
-import ctypes
-from dataclasses import dataclass, field
-from typing import List, Optional
+from pathlib import Path
 
 from rich.console import Console
 from rich.table import Table
 from rich.progress import Progress, SpinnerColumn, TextColumn
 from rich import box
 
+from . import compose_manager
 from .utils import IS_WINDOWS, IS_MAC, IS_LINUX, is_admin_windows
 
 console = Console()
 
 
-# ── Tool definitions ──────────────────────────────────────────────────────────
-
-TOOLS = {
-    "helm": {
-        "min_version":   (3, 14),
-        "version_cmd":   ["helm", "version", "--short"],
-        "choco_pkg":     "kubernetes-helm",
-        "brew_pkg":      "helm",
-        "linux_hint":    "https://helm.sh/docs/intro/install/",
-        "linux_install_cmd": "mkdir -p ~/.local/bin && curl -fsSL -o get_helm.sh https://raw.githubusercontent.com/helm/helm/main/scripts/get-helm-3 && chmod 700 get_helm.sh && HELM_INSTALL_DIR=~/.local/bin ./get_helm.sh --no-sudo && rm get_helm.sh",
-    },
-    "kind": {
-        "min_version":   (0, 23),
-        "version_cmd":   ["kind", "version"],
-        "choco_pkg":     "kind",
-        "brew_pkg":      "kind",
-        "linux_hint":    "https://kind.sigs.k8s.io/docs/user/quick-start/",
-        "linux_install_cmd": "mkdir -p ~/.local/bin && curl -Lo ~/.local/bin/kind https://kind.sigs.k8s.io/dl/v0.23.0/kind-linux-amd64 && chmod +x ~/.local/bin/kind",
-    },
-    "kubectl": {
-        "min_version":   (1, 28),
-        "version_cmd":   ["kubectl", "version", "--client", "--output=yaml"],
-        "choco_pkg":     "kubernetes-cli",
-        "brew_pkg":      "kubectl",
-        "linux_hint":    "https://kubernetes.io/docs/tasks/tools/",
-        "linux_install_cmd": "mkdir -p ~/.local/bin && curl -Lo ~/.local/bin/kubectl \"https://dl.k8s.io/release/$(curl -L -s https://dl.k8s.io/release/stable.txt)/bin/linux/amd64/kubectl\" && chmod +x ~/.local/bin/kubectl",
-    },
-}
-
-
-@dataclass
-class CheckResult:
-    tool:    str
-    found:   bool
-    version: str
-    ok:      bool
-    hint:    str = ""
-
-
 # ── Helpers ───────────────────────────────────────────────────────────────────
-
-def _parse_version(raw: str) -> tuple:
-    m = re.search(r'(\d+)\.(\d+)', raw)
-    return (int(m.group(1)), int(m.group(2))) if m else (0, 0)
-
 
 def _run(cmd: list, capture: bool = False, check: bool = False, timeout: int = 300) -> subprocess.CompletedProcess:
     return subprocess.run(cmd, capture_output=capture, text=True, check=check, timeout=timeout)
 
 
-def _relaunch_as_admin_windows():
-    """Relaunch the current process with UAC elevation."""
-    console.print()
-    console.print("[bold yellow]⚠  Administrator privileges required to install tools.[/bold yellow]")
-    console.print("   Windows will show a UAC prompt — click [bold]Yes[/bold] to continue.")
-    console.print()
-    time.sleep(2)
+# ── Apple Silicon Rosetta detection ──────────────────────────────────────────
 
-    import ctypes
-    params = " ".join(f'"{a}"' for a in sys.argv)
-    ret = ctypes.windll.shell32.ShellExecuteW(
-        None, "runas", sys.executable, params, None, 1
-    )
-    if ret <= 32:
-        console.print("[red]  ✗  Could not elevate privileges automatically.[/red]")
-        console.print("  Please re-run this command in a terminal opened as Administrator:")
-        console.print(f"  [yellow]  {sys.executable} -m cdp_dev.cli install[/yellow]")
-        sys.exit(1)
-    sys.exit(0)  # original non-admin process exits; elevated one takes over
+def _is_rosetta_translated() -> bool:
+    """
+    Return True when the current Python process is running under Rosetta 2.
 
-
-# ── Chocolatey (Windows) ──────────────────────────────────────────────────────
-
-def _choco_available() -> bool:
-    return shutil.which("choco") is not None
-
-
-def _install_choco():
-    """Install Chocolatey on Windows. Must be running as Admin."""
-    if _choco_available():
-        return
-
-    console.print("[cyan]  Installing Chocolatey package manager...[/cyan]")
-
-    if IS_WINDOWS and not is_admin_windows():
-        _relaunch_as_admin_windows()
-
-    ps_cmd = (
-        "Set-ExecutionPolicy Bypass -Scope Process -Force; "
-        "[System.Net.ServicePointManager]::SecurityProtocol = "
-        "[System.Net.ServicePointManager]::SecurityProtocol -bor 3072; "
-        "iex ((New-Object System.Net.WebClient).DownloadString("
-        "'https://community.chocolatey.org/install.ps1'))"
-    )
-    result = _run(
-        ["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", ps_cmd],
-        capture=True
-    )
-    if result.returncode != 0:
-        console.print(f"[red]  ✗  Chocolatey install failed:[/red]\n{result.stderr}")
-        sys.exit(1)
-
-    # Reload PATH so choco is found in the same process
-    _refresh_path_windows()
-
-    if _choco_available():
-        console.print("[green]  ✓  Chocolatey installed.[/green]")
-    else:
-        console.print("[red]  ✗  Chocolatey installed but still not found in PATH.[/red]")
-        console.print("  Close this terminal and reopen as Administrator, then run cdp-dev install again.")
-        sys.exit(1)
-
-
-def _refresh_path_windows():
-    """Pull updated PATH from registry so newly installed tools are found."""
+    `platform.machine()` lies under Rosetta (returns x86_64 on Apple Silicon
+    hardware), so we use sysctl.proc_translated which is truthful.
+    """
+    if not IS_MAC:
+        return False
     try:
-        import winreg
-        key = winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE,
-                             r"SYSTEM\CurrentControlSet\Control\Session Manager\Environment")
-        sys_path, _ = winreg.QueryValueEx(key, "Path")
-        winreg.CloseKey(key)
-
-        key2 = winreg.OpenKey(winreg.HKEY_CURRENT_USER, r"Environment")
-        try:
-            user_path, _ = winreg.QueryValueEx(key2, "Path")
-        except FileNotFoundError:
-            user_path = ""
-        winreg.CloseKey(key2)
-
-        new_path = sys_path + ";" + user_path
-        os.environ["PATH"] = new_path
+        out = subprocess.check_output(
+            ["sysctl", "-n", "sysctl.proc_translated"],
+            stderr=subprocess.DEVNULL, text=True, timeout=5,
+        ).strip()
     except Exception:
-        # Add common choco paths manually as fallback
-        choco_paths = [
-            r"C:\ProgramData\chocolatey\bin",
-            r"C:\ProgramData\chocolatey\lib\kubernetes-helm\tools",
-            r"C:\ProgramData\chocolatey\lib\kind\tools",
-            r"C:\ProgramData\chocolatey\lib\kubernetes-cli\tools",
-        ]
-        for p in choco_paths:
-            if p not in os.environ.get("PATH", ""):
-                os.environ["PATH"] = os.environ.get("PATH", "") + ";" + p
+        return False
+    return out == "1"
 
 
-# ── Homebrew (macOS) ──────────────────────────────────────────────────────────
+def _brew_cmd() -> list[str]:
+    """
+    Return the argv prefix to invoke brew.  On Apple Silicon hardware running
+    an x86_64 Python (Rosetta), prepend `arch -arm64` so brew targets the ARM
+    Homebrew prefix at /opt/homebrew.
+    """
+    if not IS_MAC:
+        return ["brew"]
+
+    arm_brew = Path("/opt/homebrew/bin/brew")
+    intel_brew = Path("/usr/local/bin/brew")
+
+    if arm_brew.exists() and _is_rosetta_translated():
+        return ["arch", "-arm64", str(arm_brew)]
+    if arm_brew.exists():
+        return [str(arm_brew)]
+    if intel_brew.exists():
+        return [str(intel_brew)]
+    return ["brew"]
+
+
+# ── Homebrew (macOS) — kept for potential future brew-based installs ─────────
 
 def _brew_available() -> bool:
-    return shutil.which("brew") is not None
+    return shutil.which("brew") is not None or Path("/opt/homebrew/bin/brew").exists()
 
 
 def _install_brew():
@@ -197,67 +99,55 @@ def _install_brew():
     console.print("[green]  ✓  Homebrew installed.[/green]")
 
 
-# ── Per-tool auto-install ─────────────────────────────────────────────────────
+# ── Chocolatey (Windows) — kept for future Windows installs ──────────────────
 
-def _install_tool_windows(name: str, spec: dict):
-    pkg = spec["choco_pkg"]
-    console.print(f"[cyan]  Installing [bold]{name}[/bold] via Chocolatey...[/cyan]")
+def _choco_available() -> bool:
+    return shutil.which("choco") is not None
 
-    if not is_admin_windows():
+
+def _relaunch_as_admin_windows():
+    """Relaunch the current process with UAC elevation."""
+    import ctypes
+
+    console.print()
+    console.print("[bold yellow]⚠  Administrator privileges required.[/bold yellow]")
+    console.print("   Windows will show a UAC prompt — click [bold]Yes[/bold] to continue.")
+    console.print()
+    time.sleep(2)
+
+    params = " ".join(f'"{a}"' for a in sys.argv)
+    ret = ctypes.windll.shell32.ShellExecuteW(
+        None, "runas", sys.executable, params, None, 1
+    )
+    if ret <= 32:
+        console.print("[red]  ✗  Could not elevate privileges automatically.[/red]")
+        console.print("  Please re-run this command in an Administrator terminal.")
+        sys.exit(1)
+    sys.exit(0)
+
+
+def _install_choco():
+    if _choco_available():
+        return
+    console.print("[cyan]  Installing Chocolatey package manager...[/cyan]")
+    if IS_WINDOWS and not is_admin_windows():
         _relaunch_as_admin_windows()
-
-    result = _run(["choco", "install", pkg, "-y", "--no-progress"], capture=True)
+    ps_cmd = (
+        "Set-ExecutionPolicy Bypass -Scope Process -Force; "
+        "[System.Net.ServicePointManager]::SecurityProtocol = "
+        "[System.Net.ServicePointManager]::SecurityProtocol -bor 3072; "
+        "iex ((New-Object System.Net.WebClient).DownloadString("
+        "'https://community.chocolatey.org/install.ps1'))"
+    )
+    result = _run(
+        ["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", ps_cmd],
+        capture=True
+    )
     if result.returncode != 0:
-        console.print(f"[red]  ✗  Failed to install {name}:[/red]\n{result.stderr}")
+        console.print(f"[red]  ✗  Chocolatey install failed:[/red]\n{result.stderr}")
         sys.exit(1)
-
-    _refresh_path_windows()
-    if shutil.which(name):
-        console.print(f"[green]  ✓  {name} installed.[/green]")
-    else:
-        console.print(f"[yellow]  ⚠  {name} installed but PATH not updated yet.[/yellow]")
-        console.print(f"  Close and reopen your terminal, then run cdp-dev install again.")
-        sys.exit(1)
-
-
-def _install_tool_mac(name: str, spec: dict):
-    pkg = spec["brew_pkg"]
-    console.print(f"[cyan]  Installing [bold]{name}[/bold] via Homebrew...[/cyan]")
-    result = _run(["brew", "install", pkg], capture=True)
-    if result.returncode != 0:
-        console.print(f"[red]  ✗  Failed to install {name}:[/red]\n{result.stderr}")
-        sys.exit(1)
-    console.print(f"[green]  ✓  {name} installed.[/green]")
-
-
-def _install_tool_linux(name: str, spec: dict):
-    console.print(f"[cyan]  Installing [bold]{name}[/bold] to ~/.local/bin...[/cyan]")
-
-    local_bin = os.path.expanduser("~/.local/bin")
-    if local_bin not in os.environ.get("PATH", "").split(os.pathsep):
-        os.environ["PATH"] = local_bin + os.pathsep + os.environ.get("PATH", "")
-
-    result = _run(["/bin/bash", "-c", spec["linux_install_cmd"]], capture=True)
-    if result.returncode != 0:
-        console.print(f"[red]  ✗  Failed to install {name}:[/red]\n{result.stderr}")
-        sys.exit(1)
-    console.print(f"[green]  ✓  {name} installed.[/green]")
-
-
-def _auto_install(name: str, spec: dict):
-    """Install a missing tool automatically based on OS."""
-    if IS_WINDOWS:
-        _install_choco()
-        _install_tool_windows(name, spec)
-    elif IS_MAC:
-        _install_brew()
-        _install_tool_mac(name, spec)
-    elif IS_LINUX:
-        _install_tool_linux(name, spec)
-    else:
-        console.print(f"[red]  ✗  Cannot auto-install [bold]{name}[/bold] on this OS.[/red]")
-        console.print(f"     {spec.get('linux_hint', '')}")
-        sys.exit(1)
+    if _choco_available():
+        console.print("[green]  ✓  Chocolatey installed.[/green]")
 
 
 # ── Docker helpers ────────────────────────────────────────────────────────────
@@ -275,10 +165,7 @@ def _docker_running() -> bool:
 
 
 def _wait_for_docker():
-    """
-    If Docker is installed but not running, try to launch Docker Desktop
-    and wait up to 120 seconds for it to become ready.
-    """
+    """If Docker is installed but not running, try to launch it and wait ~2 min."""
     if _docker_running():
         return
 
@@ -290,12 +177,10 @@ def _wait_for_docker():
             console.print("     Download: https://docs.docker.com/desktop/install/mac-install/")
         else:
             console.print("     https://docs.docker.com/engine/install/")
-        console.print("  Install Docker Desktop, start it, then run cdp-dev install again.")
+        console.print("  Install Docker, start it, then re-run cdp-dev install.")
         sys.exit(1)
 
-    # Docker installed but not running — try to launch it
-    console.print("[yellow]  ⚠  Docker Desktop is not running. Attempting to start it...[/yellow]")
-
+    console.print("[yellow]  ⚠  Docker is not running.  Attempting to start it...[/yellow]")
     try:
         if IS_WINDOWS:
             subprocess.Popen(
@@ -308,85 +193,77 @@ def _wait_for_docker():
                 stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL
             )
     except Exception:
-        pass  # best effort — will catch below if it doesn't start
+        pass
 
-    # Wait up to 120 seconds
     with Progress(SpinnerColumn(), TextColumn("[progress.description]{task.description}"),
                   transient=True) as progress:
-        task = progress.add_task("Waiting for Docker Desktop to start (up to 120s)...", total=None)
-        for _ in range(24):   # 24 × 5s = 120s
+        progress.add_task("Waiting for Docker to start (up to 120s)...", total=None)
+        for _ in range(24):
             time.sleep(5)
             if _docker_running():
                 progress.stop()
-                console.print("[green]  ✓  Docker Desktop is running.[/green]")
+                console.print("[green]  ✓  Docker is running.[/green]")
                 return
 
-    console.print("[red]  ✗  Docker Desktop did not start within 120 seconds.[/red]")
-    console.print("  Please open Docker Desktop manually, wait for the green 'Engine running'")
-    console.print("  status, then run cdp-dev install again.")
+    console.print("[red]  ✗  Docker did not start within 120 seconds.[/red]")
+    console.print("  Start Docker manually, then re-run cdp-dev install.")
     sys.exit(1)
 
 
-# ── Single tool check ─────────────────────────────────────────────────────────
+# ── Docker Compose detection ─────────────────────────────────────────────────
 
-def _check_tool(name: str, spec: dict) -> CheckResult:
-    if not shutil.which(name):
-        return CheckResult(tool=name, found=False, version="—", ok=False)
-
+def _detect_compose() -> list[str]:
+    """
+    Prefer `docker compose` (V2, plugin).  Fall back to legacy `docker-compose`
+    (V1 standalone binary) if that's all that's installed.
+    """
     try:
-        out = subprocess.check_output(
-            spec["version_cmd"], stderr=subprocess.STDOUT, text=True, timeout=10
+        r = subprocess.run(
+            ["docker", "compose", "version"],
+            capture_output=True, text=True, timeout=10, check=False,
         )
-        ver_tuple = _parse_version(out)
-        ver_str   = ".".join(str(x) for x in ver_tuple)
-        ok = ver_tuple >= spec["min_version"]
-        return CheckResult(tool=name, found=True, version=ver_str, ok=ok)
+        if r.returncode == 0:
+            return ["docker", "compose"]
     except Exception:
-        return CheckResult(tool=name, found=True, version="unknown", ok=True)
+        pass
+
+    if shutil.which("docker-compose"):
+        return ["docker-compose"]
+
+    console.print("[red]  ✗  Docker Compose not found.[/red]")
+    if IS_LINUX:
+        console.print("     Install the docker-compose-plugin: "
+                      "https://docs.docker.com/compose/install/linux/")
+    else:
+        console.print("     Update Docker Desktop — Compose V2 ships by default.")
+    sys.exit(1)
 
 
 # ── Main entry point ──────────────────────────────────────────────────────────
 
 def run_preflight(verbose: bool = True) -> bool:
-    """
-    Check all tools. Auto-install anything missing.
-    Returns True only when everything is confirmed working.
-    """
+    """Verify Docker + docker compose are ready.  Returns True on success."""
     console.print()
     console.print("[bold cyan]  Running preflight checks...[/bold cyan]")
     console.print()
 
-    # ── Step 1: Docker first ──────────────────────────────────────────────
     _wait_for_docker()
 
-    # ── Step 2: Check and auto-install CLI tools ──────────────────────────
-    for name, spec in TOOLS.items():
-        result = _check_tool(name, spec)
-        if not result.ok:
-            console.print(f"[yellow]  ⚠  [bold]{name}[/bold] not found or out of date — installing automatically...[/yellow]")
-            _auto_install(name, spec)
-            # Re-check after install
-            result = _check_tool(name, spec)
-            if not result.ok:
-                console.print(f"[red]  ✗  {name} still not available after install. Please restart your terminal and try again.[/red]")
-                sys.exit(1)
-        else:
-            console.print(f"[green]  ✓  {name}[/green] [dim]{result.version}[/dim]")
+    compose_cmd = _detect_compose()
+    compose_manager.set_compose_cmd(compose_cmd)
+    console.print(
+        f"[green]  ✓  docker compose[/green] "
+        f"[dim]({' '.join(compose_cmd)})[/dim]"
+    )
 
-    # ── Step 3: Print summary table ───────────────────────────────────────
     if verbose:
         console.print()
         table = Table(title="[bold]Preflight — All Checks Passed[/bold]",
                       box=box.ROUNDED, show_lines=True)
-        table.add_column("Tool",     style="bold cyan", no_wrap=True)
-        table.add_column("Version",  justify="center")
-        table.add_column("Status",   justify="center")
-
-        table.add_row("docker",  "running", "[green]✓  OK[/green]")
-        for name, spec in TOOLS.items():
-            r = _check_tool(name, spec)
-            table.add_row(name, r.version, "[green]✓  OK[/green]")
-
+        table.add_column("Component", style="bold cyan", no_wrap=True)
+        table.add_column("Status",    justify="center")
+        table.add_row("docker",         "[green]✓  running[/green]")
+        table.add_row(" ".join(compose_cmd), "[green]✓  available[/green]")
         console.print(table)
         console.print()
 

@@ -4,15 +4,12 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "cdp-local-dev"
-version = "0.1.0"
-description = "CDP Local Developer Environment — Kind + Airflow on your laptop"
+version = "0.2.0"
+description = "CDP Local Developer Environment — Airflow in Docker Compose on your laptop"
 requires-python = ">=3.10"
 dependencies = [
     "click>=8.1",
     "rich>=13.0",
-    "pyyaml>=6.0",
-    "requests>=2.31",
-    "cryptography>=41.0",
 ]
 
 [project.scripts]

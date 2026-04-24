@@ -1,4 +1,3 @@
-import subprocess
 import click
 from rich.console import Console
 from rich.table import Table
@@ -8,95 +7,58 @@ from rich import box
 console = Console()
 
 
-def _kubectl(args: list) -> str:
-    try:
-        return subprocess.check_output(
-            ["kubectl"] + args, stderr=subprocess.DEVNULL, text=True
-        )
-    except Exception:
-        return ""
-
-
 @click.command()
 def status():
-    """Show the health of all local CDP pods and port-forwards."""
-    from cdp_dev.kind_manager import cluster_exists, cluster_running
-    from cdp_dev.port_forward import status as pf_status
+    """Show health of all containers in the Airflow stack."""
+    from cdp_dev.project         import require_project_root
+    from cdp_dev.compose_manager import ps, service_health
+
+    project_dir = require_project_root()
 
     console.print()
     console.print(Rule("[bold]CDP Local Dev — Status[/bold]"))
+    console.print(f"[dim]  Project: {project_dir}[/dim]")
     console.print()
 
-    # ── Cluster status ─────────────────────────────────────────────────────
-    exists  = cluster_exists()
-    running = cluster_running()
-
-    if not exists:
-        console.print("[red]  ✗  Cluster 'cdp-local' does not exist.[/red]")
-        console.print("     Run [bold cyan]cdp-dev install[/bold cyan] to set it up.")
+    rows = ps(project_dir)
+    if not rows:
+        console.print("[yellow]  No containers found.[/yellow]")
+        console.print("     Run [bold cyan]cdp-dev start[/bold cyan] or [bold cyan]cdp-dev install[/bold cyan].")
+        console.print()
         return
 
-    cluster_state = "[green]Running[/green]" if running else "[yellow]Stopped[/yellow]"
-    console.print(f"  Kind cluster [bold]cdp-local[/bold]:  {cluster_state}")
-    console.print()
+    table = Table(title="Services", box=box.ROUNDED, show_lines=True)
+    table.add_column("Service", style="cyan",  no_wrap=True)
+    table.add_column("State",   justify="center")
+    table.add_column("Health",  justify="center")
+    table.add_column("Ports",   style="dim")
 
-    if not running:
-        console.print("  Run [bold cyan]cdp-dev start[/bold cyan] to resume the cluster.")
-        return
-
-    # ── Pod status ─────────────────────────────────────────────────────────
-    raw = _kubectl(["get", "pods", "--all-namespaces",
-                    "-o", "custom-columns=NS:.metadata.namespace,NAME:.metadata.name,"
-                           "STATUS:.status.phase,READY:.status.containerStatuses[0].ready"])
-
-    pod_table = Table(title="Pods", box=box.ROUNDED, show_lines=True)
-    pod_table.add_column("Namespace", style="cyan",   no_wrap=True)
-    pod_table.add_column("Pod",       style="white",  no_wrap=True)
-    pod_table.add_column("Status",    justify="center")
-    pod_table.add_column("Ready",     justify="center")
-
-    lines = [l for l in raw.splitlines() if l.strip() and "NS" not in l]
-    if not lines:
-        console.print("[yellow]  No pods found. The cluster may still be starting.[/yellow]")
-    else:
-        for line in lines:
-            parts = line.split()
-            if len(parts) < 3:
-                continue
-            ns, name = parts[0], parts[1]
-            phase    = parts[2] if len(parts) > 2 else "—"
-            ready    = parts[3] if len(parts) > 3 else "—"
-
-            phase_fmt = (
-                "[green]Running[/green]"   if phase == "Running"   else
-                "[cyan]Pending[/cyan]"     if phase == "Pending"   else
-                "[yellow]Unknown[/yellow]" if phase == "<none>"    else
-                f"[red]{phase}[/red]"
+    for row in rows:
+        name  = row.get("Service") or row.get("Name") or "?"
+        state = row.get("State",  "unknown")
+        ports = row.get("Publishers") or row.get("Ports") or ""
+        if isinstance(ports, list):
+            ports = ", ".join(
+                f"{p.get('PublishedPort','')}:{p.get('TargetPort','')}"
+                for p in ports if p.get("PublishedPort")
             )
-            ready_fmt = (
-                "[green]✓[/green]" if ready == "true"  else
-                "[red]✗[/red]"     if ready == "false" else
-                "[dim]—[/dim]"
-            )
-            pod_table.add_row(ns, name, phase_fmt, ready_fmt)
 
-        console.print(pod_table)
+        health = row.get("Health") or service_health(project_dir, name)
+        health_fmt = {
+            "healthy":   "[green]✓  healthy[/green]",
+            "starting":  "[yellow]⏳ starting[/yellow]",
+            "unhealthy": "[red]✗  unhealthy[/red]",
+        }.get(health, f"[dim]{health or '—'}[/dim]")
 
-    # ── Port-forward status ────────────────────────────────────────────────
+        state_fmt = (
+            "[green]running[/green]" if state == "running"
+            else f"[yellow]{state}[/yellow]" if state in ("exited", "restarting", "paused")
+            else f"[red]{state}[/red]"
+        )
+        table.add_row(name, state_fmt, health_fmt, str(ports))
+
+    console.print(table)
     console.print()
-    pf_table = Table(title="Port Forwards", box=box.ROUNDED, show_lines=True)
-    pf_table.add_column("Service",    style="cyan")
-    pf_table.add_column("URL",        style="underline")
-    pf_table.add_column("Status",     justify="center")
-
-    for fwd in pf_status():
-        state = "[green]✓  Active[/green]" if fwd["alive"] else "[red]✗  Down[/red]"
-        pf_table.add_row(fwd["name"], fwd["url"], state)
-
-    console.print(pf_table)
-    console.print()
-
-    # ── Quick tips ─────────────────────────────────────────────────────────
-    console.print("  [dim]cdp-dev logs   → tail Airflow logs[/dim]")
-    console.print("  [dim]cdp-dev stop   → pause cluster[/dim]")
+    console.print("  [dim]cdp-dev logs <service>  → tail logs[/dim]")
+    console.print("  [dim]cdp-dev test <dag_id>   → run a DAG[/dim]")
     console.print()
