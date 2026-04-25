@@ -1,0 +1,3 @@
+## 2024-04-25 - Fix Rich Markup in Click Confirmation Prompts
+**Learning:** Standard Python `click` does not natively parse or render `rich` markup tags inside its built-in prompts like `click.confirmation_option`. Using `[red]Text[/red]` inside these standard click prompts causes the CLI to literal print the tags, degrading the UX.
+**Action:** When adding or maintaining user prompts using `click` decorators, stick to plain text unless custom integrations are used to bridge `rich` and `click` properly.
