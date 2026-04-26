@@ -540,18 +540,17 @@ def _fix_statefulset_conflict(namespace: str = "airflow"):
         console.print("[yellow]  No StatefulSets found to delete — Helm may self-recover.[/yellow]")
         return
 
-    for ss in statefulsets:
-        console.print(f"[cyan]  Deleting StatefulSet: [bold]{ss}[/bold]...[/cyan]")
-        del_result = _run(
-            ["kubectl", "delete", "statefulset", ss, "-n", namespace,
-             "--cascade=orphan",   # delete the StatefulSet object but keep pods running
-             "--ignore-not-found"],
-            check=False, capture=True
-        )
-        if del_result.returncode == 0:
-            console.print(f"[green]  ✓  Deleted StatefulSet '{ss}'.[/green]")
-        else:
-            console.print(f"[yellow]  ⚠  Could not delete '{ss}': {del_result.stderr.strip()[:80]}[/yellow]")
+    console.print(f"[cyan]  Deleting StatefulSets: [bold]{', '.join(statefulsets)}[/bold]...[/cyan]")
+    del_result = _run(
+        ["kubectl", "delete", "statefulset"] + statefulsets + ["-n", namespace,
+         "--cascade=orphan",   # delete the StatefulSet object but keep pods running
+         "--ignore-not-found"],
+        check=False, capture=True
+    )
+    if del_result.returncode == 0:
+        console.print(f"[green]  ✓  Deleted StatefulSets.[/green]")
+    else:
+        console.print(f"[yellow]  ⚠  Could not delete StatefulSets: {del_result.stderr.strip()[:80]}[/yellow]")
 
     # Delete orphaned PVCs from the old persistence=true install.
     #
@@ -581,12 +580,13 @@ def _fix_statefulset_conflict(namespace: str = "airflow"):
                  "--type=merge"],
                 check=False, capture=True
             )
-            # Step B: now the delete completes immediately (no hang)
-            _run(
-                ["kubectl", "delete", "pvc", pvc, "-n", namespace,
-                 "--ignore-not-found", "--timeout=15s"],
-                check=False, capture=True
-            )
+
+        # Step B: now the delete completes immediately (no hang)
+        _run(
+            ["kubectl", "delete", "pvc"] + pvcs + ["-n", namespace,
+             "--ignore-not-found", "--timeout=15s"],
+            check=False, capture=True
+        )
         console.print(f"[green]  ✓  PVCs cleared.[/green]")
 
     # Also delete the old pods that were kept alive by --cascade=orphan.
