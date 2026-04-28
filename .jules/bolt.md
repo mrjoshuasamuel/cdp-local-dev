@@ -1,0 +1,3 @@
+## 2024-06-25 - Batching Kubernetes API Requests
+**Learning:** Multiple Kubernetes resources of the same type should be deleted in a single batched `kubectl delete` command instead of iterating through a loop. This significantly reduces Kubernetes API roundtrips and speeds up cleanup operations in the `helm_manager.py` module.
+**Action:** When writing scripts that use `kubectl` to manage multiple similar resources (like StatefulSets or PVCs), construct the command arguments as a list to perform batch operations where supported.
