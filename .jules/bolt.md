@@ -1,0 +1,3 @@
+## 2024-05-19 - Batching Kubernetes API Requests
+**Learning:** In python CLI loops monitoring Kubernetes resources, calling `kubectl get pods` and `kubectl describe pod` for each individual pod every few seconds creates massive subprocess overhead and CLI latency. Extracting the `reason` field upfront using `custom-columns` (e.g. `REASON:.status.containerStatuses[0].state.waiting.reason`) allows you to get pod states in a single bulk request without individual queries.
+**Action:** Always fetch Kubernetes data in bulk using list views (`get pods`) with custom columns or jsonpath instead of iterating and running individual `kubectl` commands per resource. Cache and pass these bulk lists down to helper functions.
