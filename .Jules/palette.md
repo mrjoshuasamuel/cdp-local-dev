@@ -1,0 +1,3 @@
+## 2025-04-30 - Fix raw rich markup tags in Click prompts
+**Learning:** `click` prompts do not natively parse `rich` markup tags, leading to literal tags like `[red]` appearing in the CLI output, which looks broken and reduces usability.
+**Action:** Always use plain text strings for the `prompt` parameter in `click` prompt functions (such as `click.confirmation_option` or `click.confirm`), rather than formatting strings meant for the `rich` console.
