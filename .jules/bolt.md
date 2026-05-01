@@ -1,0 +1,3 @@
+## 2024-06-25 - Reducing Kubernetes Subprocess Overhead
+**Learning:** Spawning individual `kubectl` subprocesses in a polling loop or iterating over individual resources (like checking pending reasons for each pod one by one) creates significant I/O overhead and latency, especially over long polling intervals.
+**Action:** Always fetch Kubernetes cluster states in bulk (e.g. using `custom-columns` to pull additional metadata like waiting reasons at the same time) and pass the fetched collections downwards. Similarly, batch resource management commands (like `kubectl delete pod1 pod2`) rather than iterating subprocess executions.
