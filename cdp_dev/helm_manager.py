@@ -255,10 +255,7 @@ def _get_crash_reason(namespace: str, pod_name: str) -> str:
 
 # ── Live progress table ────────────────────────────────────────────────────────
 
-def _build_progress_table(namespace: str, elapsed: int, pending_reasons: dict) -> Panel:
-    pods = _get_pods(namespace)
-    jobs = _get_jobs(namespace)
-
+def _build_progress_table(namespace: str, elapsed: int, pending_reasons: dict, pods: list, jobs: list) -> Panel:
     table = Table(box=box.SIMPLE, show_header=True, expand=True)
     table.add_column("Component",  style="cyan",  no_wrap=True, min_width=35)
     table.add_column("Status",     justify="center", min_width=14)
@@ -316,10 +313,8 @@ def _build_progress_table(namespace: str, elapsed: int, pending_reasons: dict) -
     return Panel(table, title=title, border_style="cyan")
 
 
-def _all_ready(namespace: str) -> bool:
+def _all_ready(namespace: str, pods: list, jobs: list) -> bool:
     """Returns True when all pods are Running+Ready and all jobs are Complete."""
-    pods = _get_pods(namespace)
-    jobs = _get_jobs(namespace)
 
     if not pods:
         return False
@@ -345,14 +340,13 @@ def _all_ready(namespace: str) -> bool:
     return pods_ok and jobs_ok
 
 
-def _has_fatal_error(namespace: str) -> tuple[bool, str]:
+def _has_fatal_error(namespace: str, pods: list) -> tuple[bool, str]:
     """
     Detect unrecoverable errors early so we can bail out with a useful message
     instead of waiting for the full 20-minute timeout.
 
     Returns (is_fatal, reason_string).
     """
-    pods = _get_pods(namespace)
     for p in pods:
         name   = p["name"]
         status = p["status"]
@@ -448,9 +442,11 @@ def _watch_airflow(namespace: str, timeout_seconds: int = 1200):
         while True:
             elapsed = int(time.time() - start)
 
+            pods = _get_pods(namespace)
+            jobs = _get_jobs(namespace)
+
             # ── Refresh pending reasons every 30 seconds (expensive kubectl describe) ──
             if elapsed - last_reason_refresh >= 30:
-                pods = _get_pods(namespace)
                 for p in pods:
                     if p["status"] == "Pending":
                         reason = _get_pod_pending_reason(namespace, p["name"])
@@ -470,22 +466,22 @@ def _watch_airflow(namespace: str, timeout_seconds: int = 1200):
                 _print_failure_diagnostics(namespace)
                 sys.exit(1)
 
-            live.update(_build_progress_table(namespace, elapsed, pending_reasons))
+            live.update(_build_progress_table(namespace, elapsed, pending_reasons, pods, jobs))
 
             # ── Success ───────────────────────────────────────────────────────
-            if _all_ready(namespace):
+            if _all_ready(namespace, pods, jobs):
                 live.stop()
                 console.print()
                 console.print("[bold green]  ✓  All Airflow services are ready![/bold green]")
                 console.print()
-                final = _build_progress_table(namespace, elapsed, pending_reasons)
+                final = _build_progress_table(namespace, elapsed, pending_reasons, pods, jobs)
                 console.print(final)
                 return
 
             # ── Early fatal error detection ───────────────────────────────────
             # Check every 30s after the first minute (give pods time to start)
             if elapsed > 60 and elapsed % 30 < 5:
-                is_fatal, reason = _has_fatal_error(namespace)
+                is_fatal, reason = _has_fatal_error(namespace, pods)
                 if is_fatal:
                     live.stop()
                     console.print()
@@ -540,18 +536,17 @@ def _fix_statefulset_conflict(namespace: str = "airflow"):
         console.print("[yellow]  No StatefulSets found to delete — Helm may self-recover.[/yellow]")
         return
 
-    for ss in statefulsets:
-        console.print(f"[cyan]  Deleting StatefulSet: [bold]{ss}[/bold]...[/cyan]")
-        del_result = _run(
-            ["kubectl", "delete", "statefulset", ss, "-n", namespace,
-             "--cascade=orphan",   # delete the StatefulSet object but keep pods running
-             "--ignore-not-found"],
-            check=False, capture=True
-        )
-        if del_result.returncode == 0:
-            console.print(f"[green]  ✓  Deleted StatefulSet '{ss}'.[/green]")
-        else:
-            console.print(f"[yellow]  ⚠  Could not delete '{ss}': {del_result.stderr.strip()[:80]}[/yellow]")
+    console.print(f"[cyan]  Deleting {len(statefulsets)} StatefulSet(s)...[/cyan]")
+    del_result = _run(
+        ["kubectl", "delete", "statefulset"] + statefulsets + ["-n", namespace,
+         "--cascade=orphan",   # delete the StatefulSet object but keep pods running
+         "--ignore-not-found"],
+        check=False, capture=True
+    )
+    if del_result.returncode == 0:
+        console.print(f"[green]  ✓  Deleted {len(statefulsets)} StatefulSet(s).[/green]")
+    else:
+        console.print(f"[yellow]  ⚠  Could not delete some StatefulSet(s): {del_result.stderr.strip()[:80]}[/yellow]")
 
     # Delete orphaned PVCs from the old persistence=true install.
     #
@@ -581,12 +576,13 @@ def _fix_statefulset_conflict(namespace: str = "airflow"):
                  "--type=merge"],
                 check=False, capture=True
             )
-            # Step B: now the delete completes immediately (no hang)
-            _run(
-                ["kubectl", "delete", "pvc", pvc, "-n", namespace,
-                 "--ignore-not-found", "--timeout=15s"],
-                check=False, capture=True
-            )
+
+        # Step B: now the delete completes immediately (no hang)
+        _run(
+            ["kubectl", "delete", "pvc"] + pvcs + ["-n", namespace,
+             "--ignore-not-found", "--timeout=15s"],
+            check=False, capture=True
+        )
         console.print(f"[green]  ✓  PVCs cleared.[/green]")
 
     # Also delete the old pods that were kept alive by --cascade=orphan.
