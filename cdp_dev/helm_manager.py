@@ -255,9 +255,7 @@ def _get_crash_reason(namespace: str, pod_name: str) -> str:
 
 # ── Live progress table ────────────────────────────────────────────────────────
 
-def _build_progress_table(namespace: str, elapsed: int, pending_reasons: dict) -> Panel:
-    pods = _get_pods(namespace)
-    jobs = _get_jobs(namespace)
+def _build_progress_table(pods: list, jobs: list, elapsed: int, pending_reasons: dict) -> Panel:
 
     table = Table(box=box.SIMPLE, show_header=True, expand=True)
     table.add_column("Component",  style="cyan",  no_wrap=True, min_width=35)
@@ -316,10 +314,8 @@ def _build_progress_table(namespace: str, elapsed: int, pending_reasons: dict) -
     return Panel(table, title=title, border_style="cyan")
 
 
-def _all_ready(namespace: str) -> bool:
+def _all_ready(pods: list, jobs: list) -> bool:
     """Returns True when all pods are Running+Ready and all jobs are Complete."""
-    pods = _get_pods(namespace)
-    jobs = _get_jobs(namespace)
 
     if not pods:
         return False
@@ -345,14 +341,13 @@ def _all_ready(namespace: str) -> bool:
     return pods_ok and jobs_ok
 
 
-def _has_fatal_error(namespace: str) -> tuple[bool, str]:
+def _has_fatal_error(pods: list) -> tuple[bool, str]:
     """
     Detect unrecoverable errors early so we can bail out with a useful message
     instead of waiting for the full 20-minute timeout.
 
     Returns (is_fatal, reason_string).
     """
-    pods = _get_pods(namespace)
     for p in pods:
         name   = p["name"]
         status = p["status"]
@@ -448,9 +443,13 @@ def _watch_airflow(namespace: str, timeout_seconds: int = 1200):
         while True:
             elapsed = int(time.time() - start)
 
+            # ⚡ Performance Optimization: Fetch Kubernetes resources exactly once per iteration
+            # to avoid spawning multiple slow `kubectl` subprocesses in helper functions.
+            pods = _get_pods(namespace)
+            jobs = _get_jobs(namespace)
+
             # ── Refresh pending reasons every 30 seconds (expensive kubectl describe) ──
             if elapsed - last_reason_refresh >= 30:
-                pods = _get_pods(namespace)
                 for p in pods:
                     if p["status"] == "Pending":
                         reason = _get_pod_pending_reason(namespace, p["name"])
@@ -470,22 +469,22 @@ def _watch_airflow(namespace: str, timeout_seconds: int = 1200):
                 _print_failure_diagnostics(namespace)
                 sys.exit(1)
 
-            live.update(_build_progress_table(namespace, elapsed, pending_reasons))
+            live.update(_build_progress_table(pods, jobs, elapsed, pending_reasons))
 
             # ── Success ───────────────────────────────────────────────────────
-            if _all_ready(namespace):
+            if _all_ready(pods, jobs):
                 live.stop()
                 console.print()
                 console.print("[bold green]  ✓  All Airflow services are ready![/bold green]")
                 console.print()
-                final = _build_progress_table(namespace, elapsed, pending_reasons)
+                final = _build_progress_table(pods, jobs, elapsed, pending_reasons)
                 console.print(final)
                 return
 
             # ── Early fatal error detection ───────────────────────────────────
             # Check every 30s after the first minute (give pods time to start)
             if elapsed > 60 and elapsed % 30 < 5:
-                is_fatal, reason = _has_fatal_error(namespace)
+                is_fatal, reason = _has_fatal_error(pods)
                 if is_fatal:
                     live.stop()
                     console.print()
