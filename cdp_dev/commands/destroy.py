@@ -7,7 +7,7 @@ console = Console()
 
 @click.command()
 @click.confirmation_option(
-    prompt="[red]This will delete the Kind cluster and ALL local data. Are you sure?[/red]"
+    prompt="This will delete the Kind cluster and ALL local data. Are you sure?"
 )
 def destroy():
     """
