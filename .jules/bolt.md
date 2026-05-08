@@ -1,0 +1,3 @@
+## 2024-05-24 - Batch Delete Kubernetes Resources
+**Learning:** In Kubernetes management scripts, deleting resources (like StatefulSets and PVCs) inside a loop creates significant overhead due to individual subprocess calls to `kubectl`. While `kubectl patch` commands for specific logic (like removing PVC finalizers) must be executed individually, the actual deletions can be batched by appending a list of resource names to a single `kubectl delete` command.
+**Action:** Always verify if multiple Kubernetes resources of the same type can be deleted in a single batched `kubectl delete` command rather than iterating through a loop to optimize performance and reduce subprocess overhead.
